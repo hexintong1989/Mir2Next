@@ -19,7 +19,9 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("世界实例允许相邻移动", WorldAllowsAdjacentMovement),
     ("世界实例拒绝越界和跨格移动", WorldRejectsInvalidMovement),
     ("世界实例拒绝过期消息序号", WorldRejectsStaleSequence),
-    ("世界实例阻止玩家占用同一格", WorldRejectsOccupiedPosition)
+    ("世界实例阻止玩家占用同一格", WorldRejectsOccupiedPosition),
+    ("移动指令只在世界帧中执行", MovementExecutesOnWorldTick),
+    ("AOI 只返回视野范围内玩家", AreaOfInterestFiltersDistantPlayers)
 };
 
 var failures = 0;
@@ -191,6 +193,37 @@ static Task WorldRejectsOccupiedPosition()
     world.Join(second, new GridPosition(2, 1));
     var blocked = world.Move(first, 1, new GridPosition(2, 1));
     Require(blocked.Failure == MoveFailure.Occupied, "已占用格应拒绝进入");
+    return Task.CompletedTask;
+}
+
+static async Task MovementExecutesOnWorldTick()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(2, 2));
+    var simulation = new WorldSimulation(world, 8);
+
+    var pending = simulation.QueueMoveAsync(characterId, 1, new GridPosition(3, 2)).AsTask();
+    Require(!pending.IsCompleted, "移动不应在入队时立即执行");
+    Require(simulation.Tick() == 1, "世界帧应处理一个指令");
+    var result = await pending;
+    Require(result.IsSuccess && result.Player.Position == new GridPosition(3, 2), "帧处理后应更新位置");
+}
+
+static Task AreaOfInterestFiltersDistantPlayers()
+{
+    var world = new WorldInstance("test", 100, 100);
+    var observer = Guid.NewGuid();
+    var nearby = Guid.NewGuid();
+    var distant = Guid.NewGuid();
+    world.Join(observer, new GridPosition(10, 10));
+    world.Join(nearby, new GridPosition(13, 12));
+    world.Join(distant, new GridPosition(30, 30));
+
+    var visible = world.VisibleTo(observer, 5);
+    Require(visible.Any(player => player.CharacterId == observer), "视野应包含观察者自身");
+    Require(visible.Any(player => player.CharacterId == nearby), "附近玩家应可见");
+    Require(visible.All(player => player.CharacterId != distant), "远处玩家不应进入视野");
     return Task.CompletedTask;
 }
 

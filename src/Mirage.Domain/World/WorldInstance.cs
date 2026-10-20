@@ -143,6 +143,27 @@ public sealed class WorldInstance
         }
     }
 
+    public IReadOnlyList<WorldPlayer> VisibleTo(Guid characterId, int radius)
+    {
+        if (radius is < 1 or > 64)
+        {
+            throw new ArgumentOutOfRangeException(nameof(radius), "AOI radius must be between 1 and 64.");
+        }
+
+        lock (_gate)
+        {
+            if (!_players.TryGetValue(characterId, out var observer))
+            {
+                return [];
+            }
+
+            return _players.Values
+                .Where(player => observer.Position.ChebyshevDistanceTo(player.Position) <= radius)
+                .OrderBy(player => player.CharacterId)
+                .ToArray();
+        }
+    }
+
     private bool Contains(GridPosition position) =>
         position.X >= 0 && position.X < Width && position.Y >= 0 && position.Y < Height;
 }
