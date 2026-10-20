@@ -17,6 +17,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mirage.Specs", "tests\Mirag
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mirage.Persistence.Postgres", "src\Mirage.Persistence.Postgres\Mirage.Persistence.Postgres.csproj", "{C2BD5F0D-C5B7-4BB6-8FD0-857FE27757BC}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mirage.WorldServer", "src\Mirage.WorldServer\Mirage.WorldServer.csproj", "{7F21E767-4C4C-4782-8C4E-EDD4DBA99F8C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -46,6 +48,10 @@ Global
 		{C2BD5F0D-C5B7-4BB6-8FD0-857FE27757BC}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C2BD5F0D-C5B7-4BB6-8FD0-857FE27757BC}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C2BD5F0D-C5B7-4BB6-8FD0-857FE27757BC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7F21E767-4C4C-4782-8C4E-EDD4DBA99F8C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7F21E767-4C4C-4782-8C4E-EDD4DBA99F8C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7F21E767-4C4C-4782-8C4E-EDD4DBA99F8C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7F21E767-4C4C-4782-8C4E-EDD4DBA99F8C}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{F7721F67-65B4-49A6-ACCC-21E248D32E73} = {5F6B387A-C189-41E6-84BC-8FAFC55E5133}
@@ -53,5 +59,6 @@ Global
 		{0DA18576-804F-418D-98E1-F398F228CEBC} = {5F6B387A-C189-41E6-84BC-8FAFC55E5133}
 		{D68CCB69-91FE-4E64-89B5-55CF7F3F009E} = {3381F41F-A0AF-4F52-B65B-5392DD7818A0}
 		{C2BD5F0D-C5B7-4BB6-8FD0-857FE27757BC} = {5F6B387A-C189-41E6-84BC-8FAFC55E5133}
+		{7F21E767-4C4C-4782-8C4E-EDD4DBA99F8C} = {5F6B387A-C189-41E6-84BC-8FAFC55E5133}
 	EndGlobalSection
 EndGlobal

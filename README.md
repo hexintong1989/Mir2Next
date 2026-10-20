@@ -18,9 +18,10 @@ $env:NUGET_PACKAGES="$PWD\.nuget\packages"
 dotnet build Mirage.sln
 dotnet run --project tests\Mirage.Specs
 dotnet run --project src\Mirage.AuthServer --urls http://127.0.0.1:5080
+dotnet run --project src\Mirage.WorldServer --urls http://127.0.0.1:5090
 ```
 
-健康检查：`GET http://127.0.0.1:5080/health`
+健康检查：认证服 `GET http://127.0.0.1:5080/health`，世界服 `GET http://127.0.0.1:5090/health`。
 
 ## PostgreSQL 模式
 

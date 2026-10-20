@@ -2,6 +2,7 @@ using Mirage.Domain.Accounts;
 using Mirage.Domain.Common;
 using Mirage.Domain.Characters;
 using Mirage.Shared.Contracts;
+using Mirage.Domain.World;
 
 var specifications = new (string Name, Func<Task> Run)[]
 {
@@ -14,7 +15,11 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("过期会话会被拒绝", ExpiredSessionIsRejected),
     ("角色创建后可按账号列出", CharacterCanBeCreatedAndListed),
     ("角色名在全服不区分大小写且唯一", CharacterNameIsGloballyUnique),
-    ("每账号最多创建四个角色", CharacterLimitIsEnforced)
+    ("每账号最多创建四个角色", CharacterLimitIsEnforced),
+    ("世界实例允许相邻移动", WorldAllowsAdjacentMovement),
+    ("世界实例拒绝越界和跨格移动", WorldRejectsInvalidMovement),
+    ("世界实例拒绝过期消息序号", WorldRejectsStaleSequence),
+    ("世界实例阻止玩家占用同一格", WorldRejectsOccupiedPosition)
 };
 
 var failures = 0;
@@ -139,6 +144,54 @@ static async Task CharacterLimitIsEnforced()
 
     var overflow = await service.CreateAsync(accountId, "hero_over", CharacterArchetype.Assassin);
     Require(overflow.Error?.Code == ErrorCode.CharacterLimitReached, "超过角色上限应被拒绝");
+}
+
+static Task WorldAllowsAdjacentMovement()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    Require(world.Join(characterId, new GridPosition(5, 5)).IsSuccess, "角色应成功进入地图");
+    var movement = world.Move(characterId, 1, new GridPosition(6, 6));
+    Require(movement.IsSuccess, "角色应能移动到相邻格");
+    Require(movement.Player.Position == new GridPosition(6, 6), "权威位置应更新");
+    return Task.CompletedTask;
+}
+
+static Task WorldRejectsInvalidMovement()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(0, 0));
+    var outside = world.Move(characterId, 1, new GridPosition(-1, 0));
+    var jump = world.Move(characterId, 2, new GridPosition(3, 3));
+    Require(outside.Failure == MoveFailure.OutOfBounds, "越界移动应被拒绝");
+    Require(jump.Failure == MoveFailure.InvalidStep, "跨格移动应被拒绝");
+    Require(jump.Player.Position == new GridPosition(0, 0), "非法移动不应改变位置");
+    return Task.CompletedTask;
+}
+
+static Task WorldRejectsStaleSequence()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(2, 2));
+    world.Move(characterId, 5, new GridPosition(3, 2));
+    var stale = world.Move(characterId, 4, new GridPosition(4, 2));
+    Require(stale.Failure == MoveFailure.StaleSequence, "旧消息序号应被拒绝");
+    Require(stale.Player.Position == new GridPosition(3, 2), "旧消息不应回滚位置");
+    return Task.CompletedTask;
+}
+
+static Task WorldRejectsOccupiedPosition()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var first = Guid.NewGuid();
+    var second = Guid.NewGuid();
+    world.Join(first, new GridPosition(1, 1));
+    world.Join(second, new GridPosition(2, 1));
+    var blocked = world.Move(first, 1, new GridPosition(2, 1));
+    Require(blocked.Failure == MoveFailure.Occupied, "已占用格应拒绝进入");
+    return Task.CompletedTask;
 }
 
 static AccountService CreateService(IClock? clock = null, TimeSpan? sessionLifetime = null) =>
