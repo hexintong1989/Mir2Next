@@ -6,7 +6,11 @@ public enum ErrorCode
     WeakPassword,
     AccountAlreadyExists,
     InvalidCredentials,
-    InvalidSession
+    InvalidSession,
+    InvalidCharacterName,
+    InvalidCharacterArchetype,
+    CharacterNameAlreadyExists,
+    CharacterLimitReached
 }
 
 public sealed record DomainError(ErrorCode Code, string Message);

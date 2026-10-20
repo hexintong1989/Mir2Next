@@ -1,5 +1,7 @@
 using Mirage.Domain.Accounts;
 using Mirage.Domain.Common;
+using Mirage.Domain.Characters;
+using Mirage.Shared.Contracts;
 
 var specifications = new (string Name, Func<Task> Run)[]
 {
@@ -9,7 +11,10 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("正确凭据会签发有效会话", LoginIssuesSession),
     ("未知账号与错误密码返回相同错误", InvalidCredentialsDoNotRevealAccount),
     ("会话可以验证并注销", SessionCanBeValidatedAndRevoked),
-    ("过期会话会被拒绝", ExpiredSessionIsRejected)
+    ("过期会话会被拒绝", ExpiredSessionIsRejected),
+    ("角色创建后可按账号列出", CharacterCanBeCreatedAndListed),
+    ("角色名在全服不区分大小写且唯一", CharacterNameIsGloballyUnique),
+    ("每账号最多创建四个角色", CharacterLimitIsEnforced)
 };
 
 var failures = 0;
@@ -102,12 +107,49 @@ static async Task ExpiredSessionIsRejected()
     Require(!service.ValidateSession(login.Value!.AccessToken).IsSuccess, "过期会话应失效");
 }
 
+static async Task CharacterCanBeCreatedAndListed()
+{
+    var service = CreateCharacterService();
+    var accountId = Guid.NewGuid();
+    var created = await service.CreateAsync(accountId, "  云中客  ", CharacterArchetype.Warrior);
+    var characters = await service.ListAsync(accountId);
+
+    Require(created.IsSuccess, "合法角色应创建成功");
+    Require(characters.Count == 1, "账号应有一个角色");
+    Require(characters[0].Name == "云中客" && characters[0].Level == 1, "角色初始数据应正确");
+}
+
+static async Task CharacterNameIsGloballyUnique()
+{
+    var service = CreateCharacterService();
+    await service.CreateAsync(Guid.NewGuid(), "Blade_01", CharacterArchetype.Warrior);
+    var duplicate = await service.CreateAsync(Guid.NewGuid(), "blade_01", CharacterArchetype.Mage);
+    Require(duplicate.Error?.Code == ErrorCode.CharacterNameAlreadyExists, "全服重名应被拒绝");
+}
+
+static async Task CharacterLimitIsEnforced()
+{
+    var service = CreateCharacterService();
+    var accountId = Guid.NewGuid();
+    for (var index = 0; index < CharacterPolicy.MaximumCharactersPerAccount; index++)
+    {
+        var created = await service.CreateAsync(accountId, $"hero_{index}", CharacterArchetype.Taoist);
+        Require(created.IsSuccess, "上限以内应允许创建");
+    }
+
+    var overflow = await service.CreateAsync(accountId, "hero_over", CharacterArchetype.Assassin);
+    Require(overflow.Error?.Code == ErrorCode.CharacterLimitReached, "超过角色上限应被拒绝");
+}
+
 static AccountService CreateService(IClock? clock = null, TimeSpan? sessionLifetime = null) =>
     new(
         new InMemoryAccountRepository(),
         new Pbkdf2PasswordHasher(10_000),
         new InMemorySessionStore(sessionLifetime),
         clock ?? new TestClock(DateTimeOffset.UtcNow));
+
+static CharacterService CreateCharacterService() =>
+    new(new InMemoryCharacterRepository(), new TestClock(DateTimeOffset.UtcNow));
 
 static void Require(bool condition, string message)
 {
