@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Mirage.Domain\Mirage.Domain.csproj" />
     <ProjectReference Include="..\Mirage.Shared\Mirage.Shared.csproj" />
+    <ProjectReference Include="..\Mirage.Persistence.Postgres\Mirage.Persistence.Postgres.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

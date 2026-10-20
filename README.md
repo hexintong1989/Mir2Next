@@ -22,4 +22,16 @@ dotnet run --project src\Mirage.AuthServer --urls http://127.0.0.1:5080
 
 健康检查：`GET http://127.0.0.1:5080/health`
 
+## PostgreSQL 模式
+
+默认不设置连接字符串时使用内存仓储，适合本地快速开发。设置以下环境变量后，服务会切换到 PostgreSQL 仓储；不要把真实密码提交到配置文件。
+
+```powershell
+$env:ConnectionStrings__Postgres="Host=127.0.0.1;Port=5432;Database=mirage;Username=mirage;Password=<password>"
+$env:Database__ApplyMigrations="true"
+dotnet run --project src\Mirage.AuthServer
+```
+
+生产环境应由部署流程执行迁移，并将 `Database__ApplyMigrations` 保持为 `false`。
+
 设计边界与后续路线见 [SPEC.md](SPEC.md)、[ROADMAP.md](ROADMAP.md) 和 [DECISIONS.md](DECISIONS.md)。

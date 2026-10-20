@@ -88,12 +88,12 @@ static async Task SessionCanBeValidatedAndRevoked()
     var service = CreateService();
     await service.RegisterAsync("player_06", "correct-horse-9");
     var login = await service.LoginAsync("player_06", "correct-horse-9");
-    var active = service.ValidateSession(login.Value!.AccessToken);
+    var active = await service.ValidateSessionAsync(login.Value!.AccessToken);
 
     Require(active.IsSuccess, "新签发的会话应有效");
     Require(active.Value!.AccountId == login.Value.AccountId, "会话主体应匹配账号");
-    Require(service.RevokeSession(login.Value.AccessToken).IsSuccess, "注销应成功");
-    Require(!service.ValidateSession(login.Value.AccessToken).IsSuccess, "注销后的会话应失效");
+    Require((await service.RevokeSessionAsync(login.Value.AccessToken)).IsSuccess, "注销应成功");
+    Require(!(await service.ValidateSessionAsync(login.Value.AccessToken)).IsSuccess, "注销后的会话应失效");
 }
 
 static async Task ExpiredSessionIsRejected()
@@ -104,7 +104,7 @@ static async Task ExpiredSessionIsRejected()
     var login = await service.LoginAsync("player_07", "correct-horse-9");
     clock.UtcNow = clock.UtcNow.AddMinutes(6);
 
-    Require(!service.ValidateSession(login.Value!.AccessToken).IsSuccess, "过期会话应失效");
+    Require(!(await service.ValidateSessionAsync(login.Value!.AccessToken)).IsSuccess, "过期会话应失效");
 }
 
 static async Task CharacterCanBeCreatedAndListed()

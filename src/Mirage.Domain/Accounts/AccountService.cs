@@ -83,20 +83,28 @@ public sealed class AccountService
             return Result<IssuedSession>.Failure(ErrorCode.InvalidCredentials, InvalidCredentialsMessage);
         }
 
-        return Result<IssuedSession>.Success(_sessions.Issue(account, _clock.UtcNow));
+        var session = await _sessions.IssueAsync(account, _clock.UtcNow, cancellationToken);
+        return Result<IssuedSession>.Success(session);
     }
 
-    public Result<SessionPrincipal> ValidateSession(string? accessToken)
+    public async ValueTask<Result<SessionPrincipal>> ValidateSessionAsync(
+        string? accessToken,
+        CancellationToken cancellationToken = default)
     {
-        var session = _sessions.FindActive(accessToken ?? string.Empty, _clock.UtcNow);
+        var session = await _sessions.FindActiveAsync(
+            accessToken ?? string.Empty,
+            _clock.UtcNow,
+            cancellationToken);
         return session is null
             ? Result<SessionPrincipal>.Failure(ErrorCode.InvalidSession, "会话无效或已过期。")
             : Result<SessionPrincipal>.Success(session);
     }
 
-    public Result<bool> RevokeSession(string? accessToken)
+    public async ValueTask<Result<bool>> RevokeSessionAsync(
+        string? accessToken,
+        CancellationToken cancellationToken = default)
     {
-        return _sessions.Revoke(accessToken ?? string.Empty)
+        return await _sessions.RevokeAsync(accessToken ?? string.Empty, cancellationToken)
             ? Result<bool>.Success(true)
             : Result<bool>.Failure(ErrorCode.InvalidSession, "会话无效或已过期。");
     }

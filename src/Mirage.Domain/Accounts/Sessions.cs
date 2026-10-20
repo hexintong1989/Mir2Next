@@ -17,9 +17,17 @@ public sealed record SessionPrincipal(
 
 public interface ISessionStore
 {
-    IssuedSession Issue(Account account, DateTimeOffset now);
-    SessionPrincipal? FindActive(string accessToken, DateTimeOffset now);
-    bool Revoke(string accessToken);
+    ValueTask<IssuedSession> IssueAsync(
+        Account account,
+        DateTimeOffset now,
+        CancellationToken cancellationToken);
+
+    ValueTask<SessionPrincipal?> FindActiveAsync(
+        string accessToken,
+        DateTimeOffset now,
+        CancellationToken cancellationToken);
+
+    ValueTask<bool> RevokeAsync(string accessToken, CancellationToken cancellationToken);
 }
 
 public sealed class InMemorySessionStore : ISessionStore
@@ -32,10 +40,14 @@ public sealed class InMemorySessionStore : ISessionStore
         _lifetime = lifetime ?? TimeSpan.FromMinutes(30);
     }
 
-    public IssuedSession Issue(Account account, DateTimeOffset now)
+    public ValueTask<IssuedSession> IssueAsync(
+        Account account,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
     {
         while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
                 .TrimEnd('=')
                 .Replace('+', '-')
@@ -47,40 +59,48 @@ public sealed class InMemorySessionStore : ISessionStore
 
             if (_sessions.TryAdd(HashToken(token), principal))
             {
-                return new IssuedSession(
+                return ValueTask.FromResult(new IssuedSession(
                     principal.AccountId,
                     principal.UserName,
                     token,
-                    principal.ExpiresAt);
+                    principal.ExpiresAt));
             }
         }
     }
 
-    public SessionPrincipal? FindActive(string accessToken, DateTimeOffset now)
+    public ValueTask<SessionPrincipal?> FindActiveAsync(
+        string accessToken,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(accessToken))
         {
-            return null;
+            return ValueTask.FromResult<SessionPrincipal?>(null);
         }
 
         var key = HashToken(accessToken);
         if (!_sessions.TryGetValue(key, out var session))
         {
-            return null;
+            return ValueTask.FromResult<SessionPrincipal?>(null);
         }
 
         if (session.ExpiresAt <= now)
         {
             _sessions.TryRemove(key, out _);
-            return null;
+            return ValueTask.FromResult<SessionPrincipal?>(null);
         }
 
-        return session;
+        return ValueTask.FromResult<SessionPrincipal?>(session);
     }
 
-    public bool Revoke(string accessToken) =>
-        !string.IsNullOrWhiteSpace(accessToken)
-        && _sessions.TryRemove(HashToken(accessToken), out _);
+    public ValueTask<bool> RevokeAsync(string accessToken, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(
+            !string.IsNullOrWhiteSpace(accessToken)
+            && _sessions.TryRemove(HashToken(accessToken), out _));
+    }
 
     private static string HashToken(string token) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));

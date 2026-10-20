@@ -4,19 +4,33 @@ using Microsoft.AspNetCore.RateLimiting;
 using Mirage.Domain.Accounts;
 using Mirage.Domain.Common;
 using Mirage.Domain.Characters;
+using Mirage.Persistence.Postgres;
 using Mirage.Shared.Contracts;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
-builder.Services.AddSingleton<IAccountRepository, InMemoryAccountRepository>();
 builder.Services.AddSingleton<IPasswordHasher, Pbkdf2PasswordHasher>();
-builder.Services.AddSingleton<ISessionStore, InMemorySessionStore>();
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<AccountService>();
-builder.Services.AddSingleton<ICharacterRepository, InMemoryCharacterRepository>();
 builder.Services.AddSingleton<CharacterService>();
+
+var postgresConnectionString = builder.Configuration.GetConnectionString("Postgres");
+if (string.IsNullOrWhiteSpace(postgresConnectionString))
+{
+    builder.Services.AddSingleton<IAccountRepository, InMemoryAccountRepository>();
+    builder.Services.AddSingleton<ISessionStore, InMemorySessionStore>();
+    builder.Services.AddSingleton<ICharacterRepository, InMemoryCharacterRepository>();
+}
+else
+{
+    var dataSource = PostgresStorage.CreateDataSource(postgresConnectionString);
+    builder.Services.AddSingleton(dataSource);
+    builder.Services.AddSingleton<IAccountRepository, PostgresAccountRepository>();
+    builder.Services.AddSingleton<ISessionStore, PostgresSessionStore>();
+    builder.Services.AddSingleton<ICharacterRepository, PostgresCharacterRepository>();
+}
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -33,6 +47,13 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
+if (!string.IsNullOrWhiteSpace(postgresConnectionString)
+    && builder.Configuration.GetValue<bool>("Database:ApplyMigrations"))
+{
+    await PostgresMigrationRunner.ApplyAsync(
+        app.Services.GetRequiredService<Npgsql.NpgsqlDataSource>(),
+        app.Lifetime.ApplicationStopping);
+}
 app.UseRateLimiter();
 
 app.MapGet("/health", () => Results.Ok(new
@@ -78,9 +99,12 @@ app.MapPost("/api/v1/sessions", async (
         session.ExpiresAt));
 }).RequireRateLimiting("authentication");
 
-app.MapGet("/api/v1/sessions/current", (HttpRequest request, AccountService accounts) =>
+app.MapGet("/api/v1/sessions/current", async (
+    HttpRequest request,
+    AccountService accounts,
+    CancellationToken cancellationToken) =>
 {
-    var result = accounts.ValidateSession(ReadBearerToken(request));
+    var result = await accounts.ValidateSessionAsync(ReadBearerToken(request), cancellationToken);
     if (!result.IsSuccess)
     {
         return ToHttpError(result.Error!);
@@ -93,9 +117,12 @@ app.MapGet("/api/v1/sessions/current", (HttpRequest request, AccountService acco
         session.ExpiresAt));
 });
 
-app.MapDelete("/api/v1/sessions/current", (HttpRequest request, AccountService accounts) =>
+app.MapDelete("/api/v1/sessions/current", async (
+    HttpRequest request,
+    AccountService accounts,
+    CancellationToken cancellationToken) =>
 {
-    var result = accounts.RevokeSession(ReadBearerToken(request));
+    var result = await accounts.RevokeSessionAsync(ReadBearerToken(request), cancellationToken);
     return result.IsSuccess ? Results.NoContent() : ToHttpError(result.Error!);
 });
 
@@ -110,7 +137,7 @@ app.MapGet("/api/v1/characters", async (
     CharacterService characters,
     CancellationToken cancellationToken) =>
 {
-    var authentication = accounts.ValidateSession(ReadBearerToken(request));
+    var authentication = await accounts.ValidateSessionAsync(ReadBearerToken(request), cancellationToken);
     if (!authentication.IsSuccess)
     {
         return ToHttpError(authentication.Error!);
@@ -127,7 +154,7 @@ app.MapPost("/api/v1/characters", async (
     CharacterService characters,
     CancellationToken cancellationToken) =>
 {
-    var authentication = accounts.ValidateSession(ReadBearerToken(httpRequest));
+    var authentication = await accounts.ValidateSessionAsync(ReadBearerToken(httpRequest), cancellationToken);
     if (!authentication.IsSuccess)
     {
         return ToHttpError(authentication.Error!);
