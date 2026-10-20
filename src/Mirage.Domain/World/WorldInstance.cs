@@ -135,6 +135,28 @@ public sealed class WorldInstance
         }
     }
 
+    public bool Leave(Guid characterId)
+    {
+        lock (_gate)
+        {
+            if (!_players.Remove(characterId, out var player))
+            {
+                return false;
+            }
+
+            _occupiedPositions.Remove(player.Position);
+            return true;
+        }
+    }
+
+    public WorldPlayer? FindPlayer(Guid characterId)
+    {
+        lock (_gate)
+        {
+            return _players.GetValueOrDefault(characterId);
+        }
+    }
+
     public IReadOnlyList<WorldPlayer> Snapshot()
     {
         lock (_gate)

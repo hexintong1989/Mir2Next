@@ -21,7 +21,9 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("世界实例拒绝过期消息序号", WorldRejectsStaleSequence),
     ("世界实例阻止玩家占用同一格", WorldRejectsOccupiedPosition),
     ("移动指令只在世界帧中执行", MovementExecutesOnWorldTick),
-    ("AOI 只返回视野范围内玩家", AreaOfInterestFiltersDistantPlayers)
+    ("AOI 只返回视野范围内玩家", AreaOfInterestFiltersDistantPlayers),
+    ("AOI 增量识别进入更新与离开", AreaOfInterestTracksDeltas),
+    ("离开地图会释放占用位置", LeavingWorldReleasesPosition)
 };
 
 var failures = 0;
@@ -224,6 +226,36 @@ static Task AreaOfInterestFiltersDistantPlayers()
     Require(visible.Any(player => player.CharacterId == observer), "视野应包含观察者自身");
     Require(visible.Any(player => player.CharacterId == nearby), "附近玩家应可见");
     Require(visible.All(player => player.CharacterId != distant), "远处玩家不应进入视野");
+    return Task.CompletedTask;
+}
+
+static Task AreaOfInterestTracksDeltas()
+{
+    var tracker = new AoiVisibilityTracker();
+    var firstId = Guid.NewGuid();
+    var secondId = Guid.NewGuid();
+    var first = new WorldPlayer(firstId, new GridPosition(1, 1), 0);
+    var second = new WorldPlayer(secondId, new GridPosition(2, 1), 0);
+
+    var initial = tracker.Update([first]);
+    var changed = tracker.Update([first with { Position = new GridPosition(1, 2) }, second], firstId);
+    var departed = tracker.Update([second]);
+
+    Require(initial.Entered.Count == 1, "首次视野应报告进入");
+    Require(changed.Entered.Single().CharacterId == secondId, "新增可见玩家应报告进入");
+    Require(changed.Updated.Single().CharacterId == firstId, "已可见的变化玩家应报告更新");
+    Require(departed.Left.Single() == firstId, "不可见玩家应报告离开");
+    return Task.CompletedTask;
+}
+
+static Task LeavingWorldReleasesPosition()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var first = Guid.NewGuid();
+    var second = Guid.NewGuid();
+    world.Join(first, new GridPosition(5, 5));
+    Require(world.Leave(first), "已加入玩家应能离开");
+    Require(world.Join(second, new GridPosition(5, 5)).IsSuccess, "离开后原位置应可再次使用");
     return Task.CompletedTask;
 }
 

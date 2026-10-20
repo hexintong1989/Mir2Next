@@ -35,4 +35,4 @@ dotnet run --project src\Mirage.AuthServer
 
 生产环境应由部署流程执行迁移，并将 `Database__ApplyMigrations` 保持为 `false`。
 
-设计边界与后续路线见 [SPEC.md](SPEC.md)、[ROADMAP.md](ROADMAP.md) 和 [DECISIONS.md](DECISIONS.md)。
+设计边界与后续路线见 [SPEC.md](SPEC.md)、[ROADMAP.md](ROADMAP.md)、[PROTOCOL.md](PROTOCOL.md) 和 [DECISIONS.md](DECISIONS.md)。

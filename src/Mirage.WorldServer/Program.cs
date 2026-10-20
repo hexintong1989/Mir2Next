@@ -6,8 +6,13 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(new WorldInstance("local-field", 128, 128));
 builder.Services.AddSingleton<WorldSimulation>();
 builder.Services.AddHostedService<WorldTickService>();
+builder.Services.AddSingleton<WorldSocketHub>();
 
 var app = builder.Build();
+app.UseWebSockets(new WebSocketOptions
+{
+    KeepAliveInterval = TimeSpan.FromSeconds(30)
+});
 
 app.MapGet("/health", () => Results.Ok(new
 {
@@ -24,6 +29,26 @@ app.MapGet("/api/v1/maps", (WorldInstance world) => Results.Ok(new[]
 
 if (app.Environment.IsDevelopment())
 {
+    app.Map("/ws/v1/world", async context =>
+    {
+        if (!context.WebSockets.IsWebSocketRequest)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        if (!Guid.TryParse(context.Request.Query["characterId"], out var characterId)
+            || !int.TryParse(context.Request.Query["x"], out var x)
+            || !int.TryParse(context.Request.Query["y"], out var y))
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        var hub = context.RequestServices.GetRequiredService<WorldSocketHub>();
+        await hub.AcceptAsync(context, characterId, new GridPosition(x, y), context.RequestAborted);
+    });
+
     app.MapPost("/internal/dev/players", (JoinWorldRequest request, WorldInstance world) =>
     {
         var result = world.Join(request.CharacterId, new GridPosition(request.X, request.Y));
