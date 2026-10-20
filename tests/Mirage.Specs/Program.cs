@@ -7,7 +7,9 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("用户名不区分大小写且不可重复", DuplicateUserNameIsRejected),
     ("弱密码会被拒绝", WeakPasswordIsRejected),
     ("正确凭据会签发有效会话", LoginIssuesSession),
-    ("未知账号与错误密码返回相同错误", InvalidCredentialsDoNotRevealAccount)
+    ("未知账号与错误密码返回相同错误", InvalidCredentialsDoNotRevealAccount),
+    ("会话可以验证并注销", SessionCanBeValidatedAndRevoked),
+    ("过期会话会被拒绝", ExpiredSessionIsRejected)
 };
 
 var failures = 0;
@@ -76,11 +78,35 @@ static async Task InvalidCredentialsDoNotRevealAccount()
     Require(missing.Error?.Message == wrongPassword.Error?.Message, "两种错误不应泄漏账号存在性");
 }
 
-static AccountService CreateService(IClock? clock = null) =>
+static async Task SessionCanBeValidatedAndRevoked()
+{
+    var service = CreateService();
+    await service.RegisterAsync("player_06", "correct-horse-9");
+    var login = await service.LoginAsync("player_06", "correct-horse-9");
+    var active = service.ValidateSession(login.Value!.AccessToken);
+
+    Require(active.IsSuccess, "新签发的会话应有效");
+    Require(active.Value!.AccountId == login.Value.AccountId, "会话主体应匹配账号");
+    Require(service.RevokeSession(login.Value.AccessToken).IsSuccess, "注销应成功");
+    Require(!service.ValidateSession(login.Value.AccessToken).IsSuccess, "注销后的会话应失效");
+}
+
+static async Task ExpiredSessionIsRejected()
+{
+    var clock = new TestClock(new DateTimeOffset(2026, 10, 20, 0, 0, 0, TimeSpan.Zero));
+    var service = CreateService(clock, TimeSpan.FromMinutes(5));
+    await service.RegisterAsync("player_07", "correct-horse-9");
+    var login = await service.LoginAsync("player_07", "correct-horse-9");
+    clock.UtcNow = clock.UtcNow.AddMinutes(6);
+
+    Require(!service.ValidateSession(login.Value!.AccessToken).IsSuccess, "过期会话应失效");
+}
+
+static AccountService CreateService(IClock? clock = null, TimeSpan? sessionLifetime = null) =>
     new(
         new InMemoryAccountRepository(),
         new Pbkdf2PasswordHasher(10_000),
-        new InMemorySessionIssuer(),
+        new InMemorySessionStore(sessionLifetime),
         clock ?? new TestClock(DateTimeOffset.UtcNow));
 
 static void Require(bool condition, string message)
@@ -93,5 +119,5 @@ static void Require(bool condition, string message)
 
 internal sealed class TestClock(DateTimeOffset utcNow) : IClock
 {
-    public DateTimeOffset UtcNow { get; } = utcNow;
+    public DateTimeOffset UtcNow { get; set; } = utcNow;
 }

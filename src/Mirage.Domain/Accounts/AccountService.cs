@@ -17,19 +17,19 @@ public sealed class AccountService
     private const string InvalidCredentialsMessage = "用户名或密码错误。";
     private readonly IAccountRepository _accounts;
     private readonly IPasswordHasher _passwordHasher;
-    private readonly ISessionIssuer _sessionIssuer;
+    private readonly ISessionStore _sessions;
     private readonly IClock _clock;
     private readonly PasswordHash _dummyPasswordHash;
 
     public AccountService(
         IAccountRepository accounts,
         IPasswordHasher passwordHasher,
-        ISessionIssuer sessionIssuer,
+        ISessionStore sessions,
         IClock clock)
     {
         _accounts = accounts;
         _passwordHasher = passwordHasher;
-        _sessionIssuer = sessionIssuer;
+        _sessions = sessions;
         _clock = clock;
         _dummyPasswordHash = passwordHasher.Hash("timing-only-password-000");
     }
@@ -68,7 +68,7 @@ public sealed class AccountService
         return Result<Account>.Success(account);
     }
 
-    public async ValueTask<Result<GameSession>> LoginAsync(
+    public async ValueTask<Result<IssuedSession>> LoginAsync(
         string? userName,
         string? password,
         CancellationToken cancellationToken = default)
@@ -80,9 +80,24 @@ public sealed class AccountService
 
         if (account is null || !passwordMatches)
         {
-            return Result<GameSession>.Failure(ErrorCode.InvalidCredentials, InvalidCredentialsMessage);
+            return Result<IssuedSession>.Failure(ErrorCode.InvalidCredentials, InvalidCredentialsMessage);
         }
 
-        return Result<GameSession>.Success(_sessionIssuer.Issue(account, _clock.UtcNow));
+        return Result<IssuedSession>.Success(_sessions.Issue(account, _clock.UtcNow));
+    }
+
+    public Result<SessionPrincipal> ValidateSession(string? accessToken)
+    {
+        var session = _sessions.FindActive(accessToken ?? string.Empty, _clock.UtcNow);
+        return session is null
+            ? Result<SessionPrincipal>.Failure(ErrorCode.InvalidSession, "会话无效或已过期。")
+            : Result<SessionPrincipal>.Success(session);
+    }
+
+    public Result<bool> RevokeSession(string? accessToken)
+    {
+        return _sessions.Revoke(accessToken ?? string.Empty)
+            ? Result<bool>.Success(true)
+            : Result<bool>.Failure(ErrorCode.InvalidSession, "会话无效或已过期。");
     }
 }

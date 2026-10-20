@@ -12,4 +12,9 @@ public sealed record SessionResponse(
     string AccessToken,
     DateTimeOffset ExpiresAt);
 
+public sealed record SessionStatusResponse(
+    Guid AccountId,
+    string UserName,
+    DateTimeOffset ExpiresAt);
+
 public sealed record ApiError(string Code, string Message);

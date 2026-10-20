@@ -1,30 +1,38 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using System.Text;
 
 namespace Mirage.Domain.Accounts;
 
-public sealed record GameSession(
+public sealed record IssuedSession(
     Guid AccountId,
     string UserName,
     string AccessToken,
     DateTimeOffset ExpiresAt);
 
-public interface ISessionIssuer
+public sealed record SessionPrincipal(
+    Guid AccountId,
+    string UserName,
+    DateTimeOffset ExpiresAt);
+
+public interface ISessionStore
 {
-    GameSession Issue(Account account, DateTimeOffset now);
+    IssuedSession Issue(Account account, DateTimeOffset now);
+    SessionPrincipal? FindActive(string accessToken, DateTimeOffset now);
+    bool Revoke(string accessToken);
 }
 
-public sealed class InMemorySessionIssuer : ISessionIssuer
+public sealed class InMemorySessionStore : ISessionStore
 {
-    private readonly ConcurrentDictionary<string, GameSession> _sessions = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SessionPrincipal> _sessions = new(StringComparer.Ordinal);
     private readonly TimeSpan _lifetime;
 
-    public InMemorySessionIssuer(TimeSpan? lifetime = null)
+    public InMemorySessionStore(TimeSpan? lifetime = null)
     {
         _lifetime = lifetime ?? TimeSpan.FromMinutes(30);
     }
 
-    public GameSession Issue(Account account, DateTimeOffset now)
+    public IssuedSession Issue(Account account, DateTimeOffset now)
     {
         while (true)
         {
@@ -32,16 +40,48 @@ public sealed class InMemorySessionIssuer : ISessionIssuer
                 .TrimEnd('=')
                 .Replace('+', '-')
                 .Replace('/', '_');
-            var session = new GameSession(
+            var principal = new SessionPrincipal(
                 account.Id,
                 account.NormalizedUserName,
-                token,
                 now.Add(_lifetime));
 
-            if (_sessions.TryAdd(token, session))
+            if (_sessions.TryAdd(HashToken(token), principal))
             {
-                return session;
+                return new IssuedSession(
+                    principal.AccountId,
+                    principal.UserName,
+                    token,
+                    principal.ExpiresAt);
             }
         }
     }
+
+    public SessionPrincipal? FindActive(string accessToken, DateTimeOffset now)
+    {
+        if (string.IsNullOrWhiteSpace(accessToken))
+        {
+            return null;
+        }
+
+        var key = HashToken(accessToken);
+        if (!_sessions.TryGetValue(key, out var session))
+        {
+            return null;
+        }
+
+        if (session.ExpiresAt <= now)
+        {
+            _sessions.TryRemove(key, out _);
+            return null;
+        }
+
+        return session;
+    }
+
+    public bool Revoke(string accessToken) =>
+        !string.IsNullOrWhiteSpace(accessToken)
+        && _sessions.TryRemove(HashToken(accessToken), out _);
+
+    private static string HashToken(string token) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
 }
