@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text.Json;
+using Mirage.Domain.Characters;
 using Mirage.Domain.World;
 using Mirage.Shared.Contracts;
 
@@ -9,6 +10,7 @@ namespace Mirage.WorldServer;
 public sealed class WorldSocketHub(
     WorldInstance world,
     WorldSimulation simulation,
+    ICharacterWorldStateStore worldStates,
     ILogger<WorldSocketHub> logger)
 {
     private const int MaximumMessageBytes = 4096;
@@ -75,7 +77,12 @@ public sealed class WorldSocketHub(
                 && ReferenceEquals(current, connection)
                 && _connections.TryRemove(characterId, out _))
             {
+                var departingPlayer = world.FindPlayer(characterId);
                 world.Leave(characterId);
+                if (departingPlayer is not null)
+                {
+                    await TryPersistWorldStateAsync(departingPlayer, CancellationToken.None);
+                }
                 await RefreshVisibilityAsync(null, CancellationToken.None);
             }
         }
@@ -161,7 +168,39 @@ public sealed class WorldSocketHub(
                 continue;
             }
 
+            if (connection.ShouldCheckpoint(DateTimeOffset.UtcNow))
+            {
+                await TryPersistWorldStateAsync(movement.Player, cancellationToken);
+            }
             await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
+        }
+    }
+
+    private async Task TryPersistWorldStateAsync(
+        WorldPlayer player,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await worldStates.SaveWorldStateAsync(
+                new CharacterWorldState(
+                    player.CharacterId,
+                    world.MapId,
+                    player.Position.X,
+                    player.Position.Y,
+                    DateTimeOffset.UtcNow),
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(
+                exception,
+                "Failed to persist world state for {CharacterId}.",
+                player.CharacterId);
         }
     }
 
@@ -205,11 +244,24 @@ public sealed class WorldSocketHub(
 
     private sealed class ClientConnection(Guid characterId, WebSocket socket)
     {
+        private static readonly TimeSpan CheckpointInterval = TimeSpan.FromSeconds(5);
         private readonly SemaphoreSlim _sendGate = new(1, 1);
+        private DateTimeOffset _lastCheckpointAt = DateTimeOffset.MinValue;
 
         public Guid CharacterId { get; } = characterId;
         public WebSocket Socket { get; } = socket;
         public AoiVisibilityTracker Visibility { get; } = new();
+
+        public bool ShouldCheckpoint(DateTimeOffset now)
+        {
+            if (now - _lastCheckpointAt < CheckpointInterval)
+            {
+                return false;
+            }
+
+            _lastCheckpointAt = now;
+            return true;
+        }
 
         public async Task SendAsync(ServerEnvelope message, CancellationToken cancellationToken)
         {

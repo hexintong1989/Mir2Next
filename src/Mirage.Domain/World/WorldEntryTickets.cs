@@ -9,6 +9,9 @@ public sealed record WorldEntryTicketClaims(
     Guid AccountId,
     Guid CharacterId,
     string RealmId,
+    string MapId,
+    int PositionX,
+    int PositionY,
     string Nonce,
     DateTimeOffset IssuedAt,
     DateTimeOffset ExpiresAt);
@@ -54,13 +57,20 @@ public sealed class HmacWorldEntryTicketProtector
         Guid accountId,
         Guid characterId,
         string realmId,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        string mapId = "local-field",
+        int positionX = 64,
+        int positionY = 64)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(realmId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(mapId);
         var claims = new WorldEntryTicketClaims(
             accountId,
             characterId,
             realmId,
+            mapId,
+            positionX,
+            positionY,
             ToBase64Url(RandomNumberGenerator.GetBytes(16)),
             now,
             now.Add(_lifetime));
@@ -102,7 +112,9 @@ public sealed class HmacWorldEntryTicketProtector
             return Failure(TicketValidationFailure.Malformed);
         }
 
-        if (claims is null || string.IsNullOrWhiteSpace(claims.Nonce))
+        if (claims is null
+            || string.IsNullOrWhiteSpace(claims.Nonce)
+            || string.IsNullOrWhiteSpace(claims.MapId))
         {
             return Failure(TicketValidationFailure.Malformed);
         }

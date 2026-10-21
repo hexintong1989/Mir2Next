@@ -1,4 +1,6 @@
+using Mirage.Domain.Characters;
 using Mirage.Domain.World;
+using Mirage.Persistence.Postgres;
 using Mirage.Shared.Contracts;
 using Mirage.WorldServer;
 
@@ -9,6 +11,18 @@ builder.Services.AddHostedService<WorldTickService>();
 builder.Services.AddSingleton<WorldSocketHub>();
 builder.Services.AddSingleton<WorldEntryTicketReplayGuard>();
 
+var postgresConnectionString = builder.Configuration.GetConnectionString("Postgres");
+if (string.IsNullOrWhiteSpace(postgresConnectionString))
+{
+    builder.Services.AddSingleton<ICharacterWorldStateStore, InMemoryCharacterWorldStateStore>();
+}
+else
+{
+    var dataSource = PostgresStorage.CreateDataSource(postgresConnectionString);
+    builder.Services.AddSingleton(dataSource);
+    builder.Services.AddSingleton<ICharacterWorldStateStore, PostgresCharacterRepository>();
+}
+
 var ticketProtector = CreateTicketProtector(builder.Configuration);
 if (ticketProtector is not null)
 {
@@ -16,6 +30,13 @@ if (ticketProtector is not null)
 }
 
 var app = builder.Build();
+if (!string.IsNullOrWhiteSpace(postgresConnectionString)
+    && builder.Configuration.GetValue<bool>("Database:ApplyMigrations"))
+{
+    await PostgresMigrationRunner.ApplyAsync(
+        app.Services.GetRequiredService<Npgsql.NpgsqlDataSource>(),
+        app.Lifetime.ApplicationStopping);
+}
 app.UseWebSockets(new WebSocketOptions
 {
     KeepAliveInterval = TimeSpan.FromSeconds(30)
@@ -66,11 +87,17 @@ app.Map("/ws/v1/world", async context =>
         return;
     }
 
+    if (!string.Equals(validation.Claims!.MapId, "local-field", StringComparison.Ordinal))
+    {
+        context.Response.StatusCode = StatusCodes.Status409Conflict;
+        return;
+    }
+
     var hub = context.RequestServices.GetRequiredService<WorldSocketHub>();
     await hub.AcceptAsync(
         context,
         validation.Claims!.CharacterId,
-        new GridPosition(64, 64),
+        new GridPosition(validation.Claims.PositionX, validation.Claims.PositionY),
         true,
         context.RequestAborted);
 });

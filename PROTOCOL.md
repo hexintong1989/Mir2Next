@@ -4,7 +4,7 @@
 
 ## 连接
 
-Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x`、`y`，仅用于底层调试。正式入口不接受客户端指定角色和出生点。票据绑定账号、角色与区服，采用HMAC-SHA256签名，并在世界服首次兑换后立即失效。
+Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x`、`y`，仅用于底层调试。正式入口不接受客户端指定角色和出生点。票据绑定账号、角色、区服、地图与存档坐标，采用HMAC-SHA256签名，并在世界服首次兑换后立即失效。
 
 服务端首先发送 `welcome`，随后发送 `visibilityDelta` 初始视野。
 

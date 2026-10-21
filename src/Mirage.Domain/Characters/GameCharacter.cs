@@ -13,10 +13,21 @@ public sealed record GameCharacter(
     int Level,
     DateTimeOffset CreatedAt,
     DateTimeOffset? DeletionRequestedAt = null,
-    DateTimeOffset? DeleteAfter = null)
+    DateTimeOffset? DeleteAfter = null,
+    string MapId = "local-field",
+    int PositionX = 64,
+    int PositionY = 64,
+    DateTimeOffset? WorldStateSavedAt = null)
 {
     public bool IsPendingDeletion => DeletionRequestedAt is not null;
 }
+
+public sealed record CharacterWorldState(
+    Guid CharacterId,
+    string MapId,
+    int PositionX,
+    int PositionY,
+    DateTimeOffset SavedAt);
 
 public static partial class CharacterPolicy
 {

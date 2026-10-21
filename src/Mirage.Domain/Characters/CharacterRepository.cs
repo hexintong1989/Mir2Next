@@ -7,7 +7,14 @@ public enum AddCharacterOutcome
     AccountLimitReached
 }
 
-public interface ICharacterRepository
+public interface ICharacterWorldStateStore
+{
+    ValueTask<bool> SaveWorldStateAsync(
+        CharacterWorldState state,
+        CancellationToken cancellationToken);
+}
+
+public interface ICharacterRepository : ICharacterWorldStateStore
 {
     ValueTask<GameCharacter?> FindOwnedAsync(
         Guid accountId,
@@ -125,6 +132,67 @@ public sealed class InMemoryCharacterRepository : ICharacterRepository
             characters[index] = updated;
             _charactersByName[updated.NormalizedName] = updated;
             return ValueTask.FromResult<GameCharacter?>(updated);
+        }
+    }
+
+    public ValueTask<bool> SaveWorldStateAsync(
+        CharacterWorldState state,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            foreach (var characters in _charactersByAccount.Values)
+            {
+                var index = characters.FindIndex(character => character.Id == state.CharacterId);
+                if (index < 0)
+                {
+                    continue;
+                }
+
+                var current = characters[index];
+                if (current.WorldStateSavedAt is not null && current.WorldStateSavedAt > state.SavedAt)
+                {
+                    return ValueTask.FromResult(false);
+                }
+
+                var updated = current with
+                {
+                    MapId = state.MapId,
+                    PositionX = state.PositionX,
+                    PositionY = state.PositionY,
+                    WorldStateSavedAt = state.SavedAt
+                };
+                characters[index] = updated;
+                _charactersByName[updated.NormalizedName] = updated;
+                return ValueTask.FromResult(true);
+            }
+
+            return ValueTask.FromResult(false);
+        }
+    }
+}
+
+public sealed class InMemoryCharacterWorldStateStore : ICharacterWorldStateStore
+{
+    private readonly object _gate = new();
+    private readonly Dictionary<Guid, CharacterWorldState> _states = [];
+
+    public ValueTask<bool> SaveWorldStateAsync(
+        CharacterWorldState state,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (_states.TryGetValue(state.CharacterId, out var current)
+                && current.SavedAt > state.SavedAt)
+            {
+                return ValueTask.FromResult(false);
+            }
+
+            _states[state.CharacterId] = state;
+            return ValueTask.FromResult(true);
         }
     }
 }

@@ -27,7 +27,9 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
+    ("角色世界状态可以持久化且拒绝旧写入", CharacterWorldStatePersistsLatestPosition),
     ("世界票据可验证且篡改会失败", WorldTicketRejectsTampering),
+    ("世界票据携带服务端权威出生点", WorldTicketCarriesAuthoritativeSpawn),
     ("世界票据校验区服和有效期", WorldTicketChecksRealmAndExpiry),
     ("世界票据只能兑换一次", WorldTicketCannotBeReplayed)
 };
@@ -307,6 +309,31 @@ static async Task CharacterDeletionCanBeCancelled()
     Require(selected?.DeleteAfter is null, "撤销后删除时间应清空");
 }
 
+static async Task CharacterWorldStatePersistsLatestPosition()
+{
+    var repository = new InMemoryCharacterRepository();
+    var service = new CharacterService(repository, new TestClock(DateTimeOffset.UtcNow));
+    var accountId = Guid.NewGuid();
+    var created = await service.CreateAsync(accountId, "traveler", CharacterArchetype.Assassin);
+    var savedAt = new DateTimeOffset(2026, 10, 21, 1, 0, 0, TimeSpan.Zero);
+
+    Require(
+        await repository.SaveWorldStateAsync(
+            new CharacterWorldState(created.Value!.Id, "local-field", 70, 71, savedAt),
+            CancellationToken.None),
+        "新世界状态应保存成功");
+    Require(
+        !await repository.SaveWorldStateAsync(
+            new CharacterWorldState(created.Value.Id, "local-field", 1, 1, savedAt.AddSeconds(-1)),
+            CancellationToken.None),
+        "旧时间戳不应覆盖新世界状态");
+
+    var loaded = await service.FindOwnedAsync(accountId, created.Value.Id);
+    Require(loaded is not null, "应能读回角色");
+    Require(loaded!.PositionX == 70 && loaded.PositionY == 71, "应读回最新权威坐标");
+    Require(loaded.WorldStateSavedAt == savedAt, "应记录最近保存时间");
+}
+
 static Task WorldTicketRejectsTampering()
 {
     var protector = CreateTicketProtector();
@@ -317,6 +344,27 @@ static Task WorldTicketRejectsTampering()
     var tampered = protector.Validate(replacement + ticket.Token[1..], "local", now.AddSeconds(1));
     Require(valid.IsSuccess, "未修改票据应验证成功");
     Require(tampered.Failure == TicketValidationFailure.InvalidSignature, "篡改票据应签名失败");
+    return Task.CompletedTask;
+}
+
+static Task WorldTicketCarriesAuthoritativeSpawn()
+{
+    var now = new DateTimeOffset(2026, 10, 21, 0, 0, 0, TimeSpan.Zero);
+    var ticket = CreateTicketProtector().Issue(
+        Guid.NewGuid(),
+        Guid.NewGuid(),
+        "local",
+        now,
+        "local-field",
+        77,
+        78);
+    var validation = CreateTicketProtector().Validate(ticket.Token, "local", now);
+    Require(validation.IsSuccess, "带出生状态的票据应验证成功");
+    Require(
+        validation.Claims?.MapId == "local-field"
+        && validation.Claims.PositionX == 77
+        && validation.Claims.PositionY == 78,
+        "票据应携带服务端保存的地图与坐标");
     return Task.CompletedTask;
 }
 
