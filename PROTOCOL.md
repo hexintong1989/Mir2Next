@@ -1,10 +1,10 @@
 # 实时世界协议 v1
 
-当前开发入口：`ws://127.0.0.1:5090/ws/v1/world`。在角色选择票据完成前，该入口仅在 Development 环境启用。
+生产形态入口：`ws://127.0.0.1:5090/ws/v1/world?ticket=<一次性票据>`。认证服验证账号对角色的所有权后，通过 `POST /api/v1/characters/{characterId}/entry-ticket` 签发30秒票据。
 
 ## 连接
 
-开发查询参数：`characterId`、`x`、`y`。生产连接将改为一次性角色选择票据，客户端不能自行指定角色和出生点。
+Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x`、`y`，仅用于底层调试。正式入口不接受客户端指定角色和出生点。票据绑定账号、角色与区服，采用HMAC-SHA256签名，并在世界服首次兑换后立即失效。
 
 服务端首先发送 `welcome`，随后发送 `visibilityDelta` 初始视野。
 

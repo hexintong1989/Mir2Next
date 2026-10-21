@@ -23,7 +23,11 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("移动指令只在世界帧中执行", MovementExecutesOnWorldTick),
     ("AOI 只返回视野范围内玩家", AreaOfInterestFiltersDistantPlayers),
     ("AOI 增量识别进入更新与离开", AreaOfInterestTracksDeltas),
-    ("离开地图会释放占用位置", LeavingWorldReleasesPosition)
+    ("离开地图会释放占用位置", LeavingWorldReleasesPosition),
+    ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
+    ("世界票据可验证且篡改会失败", WorldTicketRejectsTampering),
+    ("世界票据校验区服和有效期", WorldTicketChecksRealmAndExpiry),
+    ("世界票据只能兑换一次", WorldTicketCannotBeReplayed)
 };
 
 var failures = 0;
@@ -259,6 +263,54 @@ static Task LeavingWorldReleasesPosition()
     return Task.CompletedTask;
 }
 
+static async Task CharacterOwnershipIsEnforced()
+{
+    var service = CreateCharacterService();
+    var ownerId = Guid.NewGuid();
+    var created = await service.CreateAsync(ownerId, "owner_hero", CharacterArchetype.Warrior);
+    var owned = await service.FindOwnedAsync(ownerId, created.Value!.Id);
+    var otherAccount = await service.FindOwnedAsync(Guid.NewGuid(), created.Value.Id);
+    Require(owned?.Id == created.Value.Id, "账号应能找到自己的角色");
+    Require(otherAccount is null, "其他账号不能选择该角色");
+}
+
+static Task WorldTicketRejectsTampering()
+{
+    var protector = CreateTicketProtector();
+    var now = new DateTimeOffset(2026, 10, 20, 0, 0, 0, TimeSpan.Zero);
+    var ticket = protector.Issue(Guid.NewGuid(), Guid.NewGuid(), "local", now);
+    var valid = protector.Validate(ticket.Token, "local", now.AddSeconds(1));
+    var replacement = ticket.Token[0] == 'A' ? 'B' : 'A';
+    var tampered = protector.Validate(replacement + ticket.Token[1..], "local", now.AddSeconds(1));
+    Require(valid.IsSuccess, "未修改票据应验证成功");
+    Require(tampered.Failure == TicketValidationFailure.InvalidSignature, "篡改票据应签名失败");
+    return Task.CompletedTask;
+}
+
+static Task WorldTicketChecksRealmAndExpiry()
+{
+    var now = new DateTimeOffset(2026, 10, 20, 0, 0, 0, TimeSpan.Zero);
+    var protector = CreateTicketProtector(TimeSpan.FromSeconds(10));
+    var ticket = protector.Issue(Guid.NewGuid(), Guid.NewGuid(), "local", now);
+    Require(
+        protector.Validate(ticket.Token, "another", now).Failure == TicketValidationFailure.WrongRealm,
+        "票据不能跨区服使用");
+    Require(
+        protector.Validate(ticket.Token, "local", now.AddSeconds(11)).Failure == TicketValidationFailure.Expired,
+        "过期票据应被拒绝");
+    return Task.CompletedTask;
+}
+
+static Task WorldTicketCannotBeReplayed()
+{
+    var now = new DateTimeOffset(2026, 10, 20, 0, 0, 0, TimeSpan.Zero);
+    var ticket = CreateTicketProtector().Issue(Guid.NewGuid(), Guid.NewGuid(), "local", now);
+    var guard = new WorldEntryTicketReplayGuard();
+    Require(guard.TryRedeem(ticket.Claims, now), "首次兑换应成功");
+    Require(!guard.TryRedeem(ticket.Claims, now), "重复兑换应失败");
+    return Task.CompletedTask;
+}
+
 static AccountService CreateService(IClock? clock = null, TimeSpan? sessionLifetime = null) =>
     new(
         new InMemoryAccountRepository(),
@@ -268,6 +320,9 @@ static AccountService CreateService(IClock? clock = null, TimeSpan? sessionLifet
 
 static CharacterService CreateCharacterService() =>
     new(new InMemoryCharacterRepository(), new TestClock(DateTimeOffset.UtcNow));
+
+static HmacWorldEntryTicketProtector CreateTicketProtector(TimeSpan? lifetime = null) =>
+    new(Enumerable.Range(0, 32).Select(value => (byte)value).ToArray(), lifetime);
 
 static void Require(bool condition, string message)
 {

@@ -7,6 +7,13 @@ builder.Services.AddSingleton(new WorldInstance("local-field", 128, 128));
 builder.Services.AddSingleton<WorldSimulation>();
 builder.Services.AddHostedService<WorldTickService>();
 builder.Services.AddSingleton<WorldSocketHub>();
+builder.Services.AddSingleton<WorldEntryTicketReplayGuard>();
+
+var ticketProtector = CreateTicketProtector(builder.Configuration);
+if (ticketProtector is not null)
+{
+    builder.Services.AddSingleton(ticketProtector);
+}
 
 var app = builder.Build();
 app.UseWebSockets(new WebSocketOptions
@@ -27,9 +34,50 @@ app.MapGet("/api/v1/maps", (WorldInstance world) => Results.Ok(new[]
     new MapResponse(world.MapId, world.Width, world.Height, world.PlayerCount)
 }));
 
+app.Map("/ws/v1/world", async context =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        return;
+    }
+
+    var protector = context.RequestServices.GetService<HmacWorldEntryTicketProtector>();
+    if (protector is null)
+    {
+        context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        return;
+    }
+
+    var validation = protector.Validate(
+        context.Request.Query["ticket"],
+        "local",
+        DateTimeOffset.UtcNow);
+    if (!validation.IsSuccess)
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        return;
+    }
+
+    var replayGuard = context.RequestServices.GetRequiredService<WorldEntryTicketReplayGuard>();
+    if (!replayGuard.TryRedeem(validation.Claims!, DateTimeOffset.UtcNow))
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        return;
+    }
+
+    var hub = context.RequestServices.GetRequiredService<WorldSocketHub>();
+    await hub.AcceptAsync(
+        context,
+        validation.Claims!.CharacterId,
+        new GridPosition(64, 64),
+        true,
+        context.RequestAborted);
+});
+
 if (app.Environment.IsDevelopment())
 {
-    app.Map("/ws/v1/world", async context =>
+    app.Map("/ws/v1/world/dev", async context =>
     {
         if (!context.WebSockets.IsWebSocketRequest)
         {
@@ -46,7 +94,12 @@ if (app.Environment.IsDevelopment())
         }
 
         var hub = context.RequestServices.GetRequiredService<WorldSocketHub>();
-        await hub.AcceptAsync(context, characterId, new GridPosition(x, y), context.RequestAborted);
+        await hub.AcceptAsync(
+            context,
+            characterId,
+            new GridPosition(x, y),
+            false,
+            context.RequestAborted);
     });
 
     app.MapPost("/internal/dev/players", (JoinWorldRequest request, WorldInstance world) =>
@@ -99,3 +152,21 @@ static PlayerPositionResponse ToPositionResponse(WorldPlayer player) =>
         player.Position.X,
         player.Position.Y,
         player.LastProcessedSequence);
+
+static HmacWorldEntryTicketProtector? CreateTicketProtector(IConfiguration configuration)
+{
+    var encodedKey = configuration["WorldEntryTickets:SigningKeyBase64"];
+    if (string.IsNullOrWhiteSpace(encodedKey))
+    {
+        return null;
+    }
+
+    try
+    {
+        return new HmacWorldEntryTicketProtector(Convert.FromBase64String(encodedKey));
+    }
+    catch (FormatException)
+    {
+        throw new InvalidOperationException("World entry ticket signing key is not valid Base64.");
+    }
+}

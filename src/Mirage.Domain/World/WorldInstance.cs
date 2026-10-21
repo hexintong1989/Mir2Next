@@ -93,6 +93,34 @@ public sealed class WorldInstance
         }
     }
 
+    public JoinResult JoinAtAvailablePosition(Guid characterId, GridPosition preferredSpawn)
+    {
+        lock (_gate)
+        {
+            if (_players.TryGetValue(characterId, out var existing))
+            {
+                return new JoinResult(JoinFailure.AlreadyJoined, existing);
+            }
+
+            for (var offset = 0; offset < Width * Height; offset++)
+            {
+                var index = ((preferredSpawn.Y * Width + preferredSpawn.X) + offset) % (Width * Height);
+                var candidate = new GridPosition(index % Width, index / Width);
+                if (_occupiedPositions.Contains(candidate))
+                {
+                    continue;
+                }
+
+                var player = new WorldPlayer(characterId, candidate, 0);
+                _players.Add(characterId, player);
+                _occupiedPositions.Add(candidate);
+                return new JoinResult(JoinFailure.None, player);
+            }
+
+            return new JoinResult(JoinFailure.Occupied, null);
+        }
+    }
+
     public MoveResult Move(Guid characterId, long sequence, GridPosition target)
     {
         lock (_gate)

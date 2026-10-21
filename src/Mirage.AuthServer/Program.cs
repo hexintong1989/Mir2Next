@@ -5,6 +5,7 @@ using Mirage.Domain.Accounts;
 using Mirage.Domain.Common;
 using Mirage.Domain.Characters;
 using Mirage.Persistence.Postgres;
+using Mirage.Domain.World;
 using Mirage.Shared.Contracts;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -15,6 +16,12 @@ builder.Services.AddSingleton<IPasswordHasher, Pbkdf2PasswordHasher>();
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<AccountService>();
 builder.Services.AddSingleton<CharacterService>();
+
+var ticketProtector = CreateTicketProtector(builder.Configuration);
+if (ticketProtector is not null)
+{
+    builder.Services.AddSingleton(ticketProtector);
+}
 
 var postgresConnectionString = builder.Configuration.GetConnectionString("Postgres");
 if (string.IsNullOrWhiteSpace(postgresConnectionString))
@@ -170,6 +177,62 @@ app.MapPost("/api/v1/characters", async (
         : ToHttpError(result.Error!);
 });
 
+app.MapPost("/api/v1/characters/{characterId:guid}/entry-ticket", async (
+    Guid characterId,
+    WorldEntryTicketRequest request,
+    HttpRequest httpRequest,
+    AccountService accounts,
+    CharacterService characters,
+    IServiceProvider services,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    var authentication = await accounts.ValidateSessionAsync(
+        ReadBearerToken(httpRequest),
+        cancellationToken);
+    if (!authentication.IsSuccess)
+    {
+        return ToHttpError(authentication.Error!);
+    }
+
+    var realmId = string.IsNullOrWhiteSpace(request.RealmId) ? "local" : request.RealmId;
+    if (!string.Equals(realmId, "local", StringComparison.Ordinal))
+    {
+        return Results.BadRequest(new ApiError("InvalidRealm", "区服不存在。"));
+    }
+
+    var character = await characters.FindOwnedAsync(
+        authentication.Value!.AccountId,
+        characterId,
+        cancellationToken);
+    if (character is null)
+    {
+        return Results.NotFound(new ApiError("CharacterNotFound", "角色不存在。"));
+    }
+
+    var protector = services.GetService<HmacWorldEntryTicketProtector>();
+    if (protector is null)
+    {
+        return Results.Json(
+            new ApiError("TicketServiceUnavailable", "世界服票据服务尚未配置。"),
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    var issued = protector.Issue(
+        authentication.Value.AccountId,
+        character.Id,
+        realmId,
+        DateTimeOffset.UtcNow);
+    var webSocketUrl = configuration["WorldEntryTickets:WebSocketUrl"]
+        ?? "ws://127.0.0.1:5090/ws/v1/world";
+    return Results.Ok(new WorldEntryTicketResponse(
+        character.Id,
+        realmId,
+        webSocketUrl,
+        issued.Token,
+        issued.Claims.ExpiresAt));
+});
+
 app.Run();
 
 static IResult ToHttpError(DomainError error)
@@ -195,4 +258,22 @@ static string? ReadBearerToken(HttpRequest request)
     return authorization.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
         ? authorization[prefix.Length..].Trim()
         : null;
+}
+
+static HmacWorldEntryTicketProtector? CreateTicketProtector(IConfiguration configuration)
+{
+    var encodedKey = configuration["WorldEntryTickets:SigningKeyBase64"];
+    if (string.IsNullOrWhiteSpace(encodedKey))
+    {
+        return null;
+    }
+
+    try
+    {
+        return new HmacWorldEntryTicketProtector(Convert.FromBase64String(encodedKey));
+    }
+    catch (FormatException)
+    {
+        throw new InvalidOperationException("World entry ticket signing key is not valid Base64.");
+    }
 }

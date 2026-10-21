@@ -8,6 +8,12 @@ public sealed class CharacterService(
     ICharacterRepository characters,
     IClock clock)
 {
+    public ValueTask<GameCharacter?> FindOwnedAsync(
+        Guid accountId,
+        Guid characterId,
+        CancellationToken cancellationToken = default) =>
+        characters.FindOwnedAsync(accountId, characterId, cancellationToken);
+
     public ValueTask<IReadOnlyList<GameCharacter>> ListAsync(
         Guid accountId,
         CancellationToken cancellationToken = default) =>

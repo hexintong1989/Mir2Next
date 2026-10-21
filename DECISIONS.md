@@ -31,3 +31,7 @@ PC 与 Android 共用版本化网络契约，不将 Windows 数据结构直接�
 ## ADR-008：版本化 WebSocket 实时协议
 
 PC 与 Android 共用 UTF-8 JSON WebSocket v1 协议。单消息上限 4096 字节，每条连接串行发送；服务端以 `entered`、`updated`、`left` 增量发布 AOI 变化。开发入口与生产认证入口分离。
+
+## ADR-009：短时一次性世界票据
+
+认证服只为账号拥有的角色签发30秒HMAC-SHA256票据。票据绑定账号、角色、区服和随机数；世界服校验签名、时钟、区服并记录随机数防重放。生产WebSocket不信任客户端提交的角色ID或出生坐标。

@@ -7,6 +7,23 @@ namespace Mirage.Persistence.Postgres;
 
 public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) : ICharacterRepository
 {
+    public async ValueTask<GameCharacter?> FindOwnedAsync(
+        Guid accountId,
+        Guid characterId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT character_id, account_id, name, normalized_name, archetype, level, created_at
+            FROM characters
+            WHERE account_id = $1 AND character_id = $2
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue(accountId);
+        command.Parameters.AddWithValue(characterId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadCharacter(reader) : null;
+    }
+
     public async ValueTask<IReadOnlyList<GameCharacter>> ListByAccountAsync(
         Guid accountId,
         CancellationToken cancellationToken)
@@ -23,14 +40,7 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) : I
         var characters = new List<GameCharacter>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            characters.Add(new GameCharacter(
-                reader.GetGuid(0),
-                reader.GetGuid(1),
-                reader.GetString(2),
-                reader.GetString(3),
-                (CharacterArchetype)reader.GetInt16(4),
-                reader.GetInt32(5),
-                new DateTimeOffset(reader.GetDateTime(6), TimeSpan.Zero)));
+            characters.Add(ReadCharacter(reader));
         }
 
         return characters;
@@ -98,4 +108,14 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) : I
             return AddCharacterOutcome.NameAlreadyExists;
         }
     }
+
+    private static GameCharacter ReadCharacter(NpgsqlDataReader reader) =>
+        new(
+            reader.GetGuid(0),
+            reader.GetGuid(1),
+            reader.GetString(2),
+            reader.GetString(3),
+            (CharacterArchetype)reader.GetInt16(4),
+            reader.GetInt32(5),
+            new DateTimeOffset(reader.GetDateTime(6), TimeSpan.Zero));
 }

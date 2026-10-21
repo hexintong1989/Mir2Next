@@ -9,6 +9,11 @@ public enum AddCharacterOutcome
 
 public interface ICharacterRepository
 {
+    ValueTask<GameCharacter?> FindOwnedAsync(
+        Guid accountId,
+        Guid characterId,
+        CancellationToken cancellationToken);
+
     ValueTask<IReadOnlyList<GameCharacter>> ListByAccountAsync(
         Guid accountId,
         CancellationToken cancellationToken);
@@ -24,6 +29,21 @@ public sealed class InMemoryCharacterRepository : ICharacterRepository
     private readonly object _gate = new();
     private readonly Dictionary<string, GameCharacter> _charactersByName = new(StringComparer.Ordinal);
     private readonly Dictionary<Guid, List<GameCharacter>> _charactersByAccount = [];
+
+    public ValueTask<GameCharacter?> FindOwnedAsync(
+        Guid accountId,
+        Guid characterId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            var character = _charactersByAccount.TryGetValue(accountId, out var characters)
+                ? characters.FirstOrDefault(value => value.Id == characterId)
+                : null;
+            return ValueTask.FromResult(character);
+        }
+    }
 
     public ValueTask<IReadOnlyList<GameCharacter>> ListByAccountAsync(
         Guid accountId,

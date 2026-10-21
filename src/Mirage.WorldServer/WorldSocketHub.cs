@@ -21,6 +21,7 @@ public sealed class WorldSocketHub(
         HttpContext context,
         Guid characterId,
         GridPosition spawn,
+        bool findAvailableSpawn,
         CancellationToken cancellationToken)
     {
         using var socket = await context.WebSockets.AcceptWebSocketAsync();
@@ -34,7 +35,9 @@ public sealed class WorldSocketHub(
             return;
         }
 
-        var join = world.Join(characterId, spawn);
+        var join = findAvailableSpawn
+            ? world.JoinAtAvailablePosition(characterId, spawn)
+            : world.Join(characterId, spawn);
         if (!join.IsSuccess && join.Failure != JoinFailure.AlreadyJoined)
         {
             _connections.TryRemove(characterId, out _);
