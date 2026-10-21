@@ -4,7 +4,7 @@
 
 ## 连接
 
-Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x`、`y`，仅用于底层调试。正式入口不接受客户端指定角色和出生点。票据绑定账号、角色、职业、区服、地图、存档坐标及战斗资源，采用HMAC-SHA256签名，并在世界服首次兑换后立即失效；进入世界前以数据库最新存档为准。
+Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x`、`y`，仅用于底层调试。正式入口不接受客户端指定角色、出生点、等级或经验。票据绑定账号、角色、职业、区服、地图、存档坐标、战斗资源及成长状态，采用HMAC-SHA256签名，并在世界服首次兑换后立即失效；进入世界前以数据库最新存档为准。
 
 服务端首先发送 `welcome`，随后发送 `visibilityDelta` 初始视野。
 
@@ -50,6 +50,7 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 - `monsterUpdated`：怪物受伤后的权威血量、伤害和死亡状态。
 - `attackRejected`：攻击因目标、距离、冷却或序号不合法而被拒绝。
 - `skillResult` / `skillRejected`：技能伤害、施法后法力与角色状态，或拒绝原因。
+- `progression`：击杀所得经验、提升等级数和升级后的完整权威角色状态。
 - `chatMessage` / `chatRejected`：带服务端角色ID和时间戳的同图视野聊天，或拒绝原因。
 - `itemUsed` / `itemUseRejected`：使用消耗品后的权威生命、法力及背包快照，或拒绝原因。
 - `dropSnapshot`：视野内地面物品、击杀者保护截止帧及物品过期帧。
@@ -61,7 +62,9 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 
 所有位置均以服务端状态为准。客户端只能发送移动意图，不得直接设置最终状态。
 怪物快照也会由世界服约每秒主动同步，用于呈现自动移动和死亡后的刷新。
-玩家位置状态包含职业、当前/最大生命、当前/最大法力、攻击、防御、攻击间隔、存活状态及复活保护截止帧；死亡角色的操作会被相应拒绝。法力每20帧恢复1点，复活时恢复满值。首批技能：战士 `power_strike`、法师 `fireball`、道士 `soul_talisman`、刺客 `shadow_strike`。
+玩家位置状态包含职业、等级、累计经验、下一级阈值、当前/最大生命、当前/最大法力、攻击、防御、攻击间隔、存活状态及复活保护截止帧；死亡角色的操作会被相应拒绝。法力每20帧恢复1点，复活时恢复满值。角色等级上限为60，击杀经验和升级后的职业属性均由服务端结算。
+
+各职业1级基础技能分别为战士 `power_strike`、法师 `fireball`、道士 `soul_talisman`、刺客 `shadow_strike`；5级技能分别为 `whirlwind`、`lightning_bolt`、`poison_talisman`、`blade_flurry`。`welcome` 会返回技能的 `minimumLevel` 与当前 `unlocked` 状态，未达到门槛时施法返回 `LevelTooLow`。
 
 聊天单条最多120个UTF-16字符，禁止控制字符，同一角色至少间隔20帧（1秒），只广播给12格AOI内的玩家。
 首批消耗品：`venison` 恢复25点生命，`mana_herb` 恢复15点法力；资源已满时不消耗物品。

@@ -17,6 +17,7 @@ public sealed record CharacterResponse(
     string Name,
     CharacterArchetype Archetype,
     int Level,
+    long Experience,
     DateTimeOffset CreatedAt,
     DateTimeOffset? DeletionRequestedAt,
     DateTimeOffset? DeleteAfter);

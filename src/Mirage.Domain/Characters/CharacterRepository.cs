@@ -219,7 +219,9 @@ public sealed class InMemoryCharacterRepository : ICharacterRepository
                     PositionY = state.PositionY,
                     WorldStateSavedAt = state.SavedAt,
                     Health = state.Health ?? current.Health,
-                    Mana = state.Mana ?? current.Mana
+                    Mana = state.Mana ?? current.Mana,
+                    Level = state.Level,
+                    Experience = state.Experience
                 };
                 characters[index] = updated;
                 _charactersByName[updated.NormalizedName] = updated;
@@ -262,7 +264,9 @@ public sealed class InMemoryCharacterRepository : ICharacterRepository
                         PositionY = state.PositionY,
                         WorldStateSavedAt = state.SavedAt,
                         Health = state.Health ?? current.Health,
-                        Mana = state.Mana ?? current.Mana
+                        Mana = state.Mana ?? current.Mana,
+                        Level = state.Level,
+                        Experience = state.Experience
                     };
                     characters[index] = updated;
                     _charactersByName[updated.NormalizedName] = updated;
@@ -287,7 +291,7 @@ public sealed class InMemoryCharacterRepository : ICharacterRepository
             return ValueTask.FromResult(character?.WorldStateSavedAt is { } savedAt
                 ? new CharacterWorldState(character.Id, character.MapId,
                     character.PositionX, character.PositionY, savedAt,
-                    character.Health, character.Mana)
+                    character.Health, character.Mana, character.Level, character.Experience)
                 : null);
         }
     }

@@ -24,7 +24,9 @@ public sealed class WorldCheckpointService(
                     player.Position.Y,
                     savedAt,
                     player.Health,
-                    player.Mana))
+                    player.Mana,
+                    player.Level,
+                    player.Experience))
                 .ToArray();
             if (states.Length == 0)
             {

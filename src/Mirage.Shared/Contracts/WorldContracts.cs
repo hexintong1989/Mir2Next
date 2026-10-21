@@ -42,7 +42,10 @@ public sealed record PlayerPositionResponse(
     int Defense,
     int AttackCooldownTicks,
     int Mana,
-    int MaximumMana);
+    int MaximumMana,
+    int Level,
+    long Experience,
+    long? NextLevelExperience);
 
 public sealed record MoveResponse(
     bool Accepted,

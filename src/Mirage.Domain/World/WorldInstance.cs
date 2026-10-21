@@ -40,6 +40,7 @@ public enum SkillFailure
     StaleSequence,
     UnknownSkill,
     WrongArchetype,
+    LevelTooLow,
     MonsterNotFound,
     OutOfRange,
     InsufficientMana,
@@ -93,7 +94,9 @@ public sealed record WorldPlayer(
     int Defense = 3,
     int AttackCooldownTicks = 10,
     int Mana = 30,
-    int MaximumMana = 30)
+    int MaximumMana = 30,
+    int Level = CharacterProgression.MinimumLevel,
+    long Experience = 0)
 {
     public bool IsAlive => Health > 0;
 }
@@ -134,7 +137,9 @@ public readonly record struct AttackResult(
     WorldMonster? Monster,
     int Damage,
     bool Defeated,
-    WorldDrop? Drop)
+    WorldDrop? Drop,
+    int ExperienceGained = 0,
+    int LevelsGained = 0)
 {
     public bool IsSuccess => Failure == AttackFailure.None;
 }
@@ -146,7 +151,9 @@ public readonly record struct SkillResult(
     WorldMonster? Monster,
     int Damage,
     bool Defeated,
-    WorldDrop? Drop)
+    WorldDrop? Drop,
+    int ExperienceGained = 0,
+    int LevelsGained = 0)
 {
     public bool IsSuccess => Failure == SkillFailure.None;
 }
@@ -319,7 +326,9 @@ public sealed class WorldInstance
     public JoinResult JoinAtAvailablePosition(
         Guid characterId,
         GridPosition preferredSpawn,
-        CharacterArchetype archetype = CharacterArchetype.Warrior)
+        CharacterArchetype archetype = CharacterArchetype.Warrior,
+        int level = CharacterProgression.MinimumLevel,
+        long experience = 0)
     {
         lock (_gate)
         {
@@ -337,7 +346,7 @@ public sealed class WorldInstance
                     continue;
                 }
 
-                var player = CreatePlayer(characterId, candidate, archetype);
+                var player = CreatePlayer(characterId, candidate, archetype, level, experience);
                 _players.Add(characterId, player);
                 _playerSpawns[characterId] = candidate;
                 _inventories.TryAdd(characterId, new Dictionary<string, int>(StringComparer.Ordinal));
@@ -450,6 +459,8 @@ public sealed class WorldInstance
             monster = monster with { Health = health };
             var defeated = health == 0;
             WorldDrop? drop = null;
+            var experienceGained = 0;
+            var levelsGained = 0;
             if (defeated)
             {
                 _monsters.Remove(monsterId);
@@ -463,6 +474,7 @@ public sealed class WorldInstance
                     monster.Position,
                     characterId,
                     currentTick);
+                (player, experienceGained, levelsGained) = AwardExperience(player, monster.Level);
             }
             else
             {
@@ -475,7 +487,9 @@ public sealed class WorldInstance
                 monster,
                 damage,
                 defeated,
-                drop);
+                drop,
+                experienceGained,
+                levelsGained);
         }
     }
 
@@ -519,6 +533,11 @@ public sealed class WorldInstance
                 return Reject(SkillFailure.WrongArchetype);
             }
 
+            if (player.Level < skill.MinimumLevel)
+            {
+                return Reject(SkillFailure.LevelTooLow);
+            }
+
             if (!_monsters.TryGetValue(monsterId, out var monster))
             {
                 return Reject(SkillFailure.MonsterNotFound);
@@ -548,6 +567,8 @@ public sealed class WorldInstance
             monster = monster with { Health = monster.Health - damage };
             var defeated = monster.Health == 0;
             WorldDrop? drop = null;
+            var experienceGained = 0;
+            var levelsGained = 0;
             if (defeated)
             {
                 _monsters.Remove(monsterId);
@@ -558,6 +579,7 @@ public sealed class WorldInstance
                 };
                 drop = CreateDrop(_monsterSpawns[monsterId].DropItemId,
                     monster.Position, characterId, currentTick);
+                (player, experienceGained, levelsGained) = AwardExperience(player, monster.Level);
             }
             else
             {
@@ -565,7 +587,7 @@ public sealed class WorldInstance
             }
 
             return new SkillResult(SkillFailure.None, skillId, player, monster,
-                damage, defeated, drop);
+                damage, defeated, drop, experienceGained, levelsGained);
         }
     }
 
@@ -1170,26 +1192,46 @@ public sealed class WorldInstance
     private static WorldPlayer CreatePlayer(
         Guid characterId,
         GridPosition position,
-        CharacterArchetype archetype) => archetype switch
+        CharacterArchetype archetype,
+        int level = CharacterProgression.MinimumLevel,
+        long experience = 0)
     {
-        CharacterArchetype.Warrior => new WorldPlayer(
-            characterId, position, 0, MaximumHealth: 120, Health: 120,
-            Archetype: archetype, AttackPower: 12, Defense: 3, AttackCooldownTicks: 10,
-            Mana: 30, MaximumMana: 30),
-        CharacterArchetype.Mage => new WorldPlayer(
-            characterId, position, 0, MaximumHealth: 80, Health: 80,
-            Archetype: archetype, AttackPower: 14, Defense: 1, AttackCooldownTicks: 12,
-            Mana: 60, MaximumMana: 60),
-        CharacterArchetype.Taoist => new WorldPlayer(
-            characterId, position, 0, MaximumHealth: 95, Health: 95,
-            Archetype: archetype, AttackPower: 10, Defense: 2, AttackCooldownTicks: 11,
-            Mana: 50, MaximumMana: 50),
-        CharacterArchetype.Assassin => new WorldPlayer(
-            characterId, position, 0, MaximumHealth: 90, Health: 90,
-            Archetype: archetype, AttackPower: 13, Defense: 1, AttackCooldownTicks: 8,
-            Mana: 35, MaximumMana: 35),
-        _ => throw new ArgumentOutOfRangeException(nameof(archetype))
-    };
+        if (level is < CharacterProgression.MinimumLevel or > CharacterProgression.MaximumLevel
+            || CharacterProgression.LevelForExperience(experience) != level)
+        {
+            throw new ArgumentOutOfRangeException(nameof(level), "Level must match cumulative experience.");
+        }
+
+        var levelOffset = level - 1;
+        return archetype switch
+        {
+            CharacterArchetype.Warrior => new WorldPlayer(
+                characterId, position, 0, MaximumHealth: 120 + levelOffset * 12,
+                Health: 120 + levelOffset * 12, Archetype: archetype,
+                AttackPower: 12 + levelOffset * 2, Defense: 3 + levelOffset / 3,
+                AttackCooldownTicks: 10, Mana: 30 + levelOffset * 2,
+                MaximumMana: 30 + levelOffset * 2, Level: level, Experience: experience),
+            CharacterArchetype.Mage => new WorldPlayer(
+                characterId, position, 0, MaximumHealth: 80 + levelOffset * 7,
+                Health: 80 + levelOffset * 7, Archetype: archetype,
+                AttackPower: 14 + levelOffset * 3, Defense: 1 + levelOffset / 4,
+                AttackCooldownTicks: 12, Mana: 60 + levelOffset * 8,
+                MaximumMana: 60 + levelOffset * 8, Level: level, Experience: experience),
+            CharacterArchetype.Taoist => new WorldPlayer(
+                characterId, position, 0, MaximumHealth: 95 + levelOffset * 9,
+                Health: 95 + levelOffset * 9, Archetype: archetype,
+                AttackPower: 10 + levelOffset * 2, Defense: 2 + levelOffset / 3,
+                AttackCooldownTicks: 11, Mana: 50 + levelOffset * 6,
+                MaximumMana: 50 + levelOffset * 6, Level: level, Experience: experience),
+            CharacterArchetype.Assassin => new WorldPlayer(
+                characterId, position, 0, MaximumHealth: 90 + levelOffset * 8,
+                Health: 90 + levelOffset * 8, Archetype: archetype,
+                AttackPower: 13 + levelOffset * 3, Defense: 1 + levelOffset / 4,
+                AttackCooldownTicks: 8, Mana: 35 + levelOffset * 4,
+                MaximumMana: 35 + levelOffset * 4, Level: level, Experience: experience),
+            _ => throw new ArgumentOutOfRangeException(nameof(archetype))
+        };
+    }
 
     private bool TryBeginEquipmentCommand(
         Guid characterId,
@@ -1231,7 +1273,12 @@ public sealed class WorldInstance
 
     private WorldPlayer ApplyEquipmentStats(WorldPlayer player)
     {
-        var basePlayer = CreatePlayer(player.CharacterId, player.Position, player.Archetype);
+        var basePlayer = CreatePlayer(
+            player.CharacterId,
+            player.Position,
+            player.Archetype,
+            player.Level,
+            player.Experience);
         var definitions = EquipmentSnapshot(player.CharacterId)
             .Select(item => EquipmentCatalog.TryGet(item.ItemId, out var definition) ? definition : null)
             .Where(definition => definition is not null)
@@ -1248,6 +1295,43 @@ public sealed class WorldInstance
             AttackPower = basePlayer.AttackPower + definitions.Sum(item => item.AttackBonus),
             Defense = basePlayer.Defense + definitions.Sum(item => item.DefenseBonus)
         };
+    }
+
+    private (WorldPlayer Player, int ExperienceGained, int LevelsGained) AwardExperience(
+        WorldPlayer player,
+        int monsterLevel)
+    {
+        var reward = CharacterProgression.ExperienceReward(player.Level, monsterLevel);
+        var experience = player.Experience > long.MaxValue - reward
+            ? long.MaxValue
+            : player.Experience + reward;
+        var level = CharacterProgression.LevelForExperience(experience);
+        var levelsGained = level - player.Level;
+        if (levelsGained == 0)
+        {
+            player = player with { Experience = experience };
+            _players[player.CharacterId] = player;
+            return (player, reward, 0);
+        }
+
+        var previousMaximumMana = player.MaximumMana;
+        player = player with { Level = level, Experience = experience };
+        var leveledBase = CreatePlayer(
+            player.CharacterId,
+            player.Position,
+            player.Archetype,
+            level,
+            experience);
+        player = player with
+        {
+            Mana = Math.Min(
+                leveledBase.MaximumMana,
+                player.Mana + leveledBase.MaximumMana - previousMaximumMana),
+            MaximumMana = leveledBase.MaximumMana
+        };
+        player = ApplyEquipmentStats(player);
+        _players[player.CharacterId] = player;
+        return (player, reward, levelsGained);
     }
 
     private WorldDrop CreateDrop(

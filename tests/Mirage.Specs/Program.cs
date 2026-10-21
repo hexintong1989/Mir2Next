@@ -38,6 +38,8 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("死亡玩家会在固定帧复活", DeadPlayerRespawnsOnSchedule),
     ("无人拾取的地面物品会按固定帧过期", GroundDropExpires),
     ("四职业拥有不同的基础战斗属性", ArchetypesHaveDistinctCombatProfiles),
+    ("击杀怪物获得经验并由服务端提升等级属性", MonsterKillsAdvanceCharacterProgression),
+    ("高级技能受职业和最低等级共同限制", AdvancedSkillsRequireCharacterLevel),
     ("装备会从背包转移并增加权威属性", EquipmentMovesFromInventoryAndAddsStats),
     ("装备与卸下指令都在世界帧执行", EquipmentCommandsExecuteOnWorldTick),
     ("装备随背包快照保存并在加载时重算属性", EquipmentPersistsWithInventorySnapshot),
@@ -582,6 +584,59 @@ static Task ArchetypesHaveDistinctCombatProfiles()
     return Task.CompletedTask;
 }
 
+static Task MonsterKillsAdvanceCharacterProgression()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(1, 1));
+    AttackResult last = default;
+    for (var index = 0; index < 3; index++)
+    {
+        var monsterId = Guid.NewGuid();
+        Require(world.SpawnMonster(monsterId, "training_target", new GridPosition(2, 1), 1, 1),
+            "训练怪物应成功生成");
+        last = world.Attack(characterId, index + 1, monsterId, index * 10L);
+        Require(last.IsSuccess && last.Defeated && last.ExperienceGained == 35,
+            "每次击杀应按怪物和玩家等级授予权威经验");
+    }
+
+    Require(last.Player.Experience == 105 && last.Player.Level == 2 && last.LevelsGained == 1,
+        "累计经验跨过阈值时应由服务端提升等级");
+    Require(last.Player.MaximumHealth == 132 && last.Player.AttackPower == 14,
+        "升级后应按职业成长重新计算生命和攻击");
+    Require(CharacterProgression.ExperienceRequiredForLevel(3) == 300,
+        "下一级累计经验阈值应稳定可计算");
+    return Task.CompletedTask;
+}
+
+static Task AdvancedSkillsRequireCharacterLevel()
+{
+    var lowLevelWorld = new WorldInstance("test", 20, 20);
+    var novice = Guid.NewGuid();
+    var noviceTarget = Guid.NewGuid();
+    lowLevelWorld.JoinAtAvailablePosition(novice, new GridPosition(1, 1), CharacterArchetype.Mage);
+    lowLevelWorld.SpawnMonster(noviceTarget, "dummy", new GridPosition(2, 1), 1, 100);
+    Require(lowLevelWorld.CastSkill(novice, 1, "lightning_bolt", noviceTarget, 1).Failure
+            == SkillFailure.LevelTooLow,
+        "低等级角色不能使用尚未达到学习等级的技能");
+
+    var levelFiveWorld = new WorldInstance("test", 20, 20);
+    var veteran = Guid.NewGuid();
+    var veteranTarget = Guid.NewGuid();
+    var experience = CharacterProgression.ExperienceRequiredForLevel(5);
+    levelFiveWorld.JoinAtAvailablePosition(
+        veteran,
+        new GridPosition(1, 1),
+        CharacterArchetype.Mage,
+        5,
+        experience);
+    levelFiveWorld.SpawnMonster(veteranTarget, "dummy", new GridPosition(2, 1), 5, 200);
+    var cast = levelFiveWorld.CastSkill(veteran, 1, "lightning_bolt", veteranTarget, 1);
+    Require(cast.IsSuccess && cast.Damage == 50 && cast.Player.Mana == 68,
+        "达到等级后高级技能应按成长属性结算伤害和法力");
+    return Task.CompletedTask;
+}
+
 static Task EquipmentMovesFromInventoryAndAddsStats()
 {
     var world = new WorldInstance("test", 10, 10);
@@ -872,7 +927,7 @@ static async Task CharacterWorldStatePersistsLatestPosition()
 
     Require(
         await repository.SaveWorldStateAsync(
-            new CharacterWorldState(created.Value!.Id, "local-field", 70, 71, savedAt, 52, 17),
+            new CharacterWorldState(created.Value!.Id, "local-field", 70, 71, savedAt, 52, 17, 3, 300),
             CancellationToken.None),
         "新世界状态应保存成功");
     Require(
@@ -886,8 +941,10 @@ static async Task CharacterWorldStatePersistsLatestPosition()
     Require(loaded is not null, "应能读回角色");
     Require(loaded!.PositionX == 70 && loaded.PositionY == 71, "应读回最新权威坐标");
     Require(loaded.Health == 52 && loaded.Mana == 17, "应读回最新生命和法力");
+    Require(loaded.Level == 3 && loaded.Experience == 300, "应读回服务端保存的等级和经验");
     Require(loaded.WorldStateSavedAt == savedAt, "应记录最近保存时间");
-    Require(latestState?.PositionX == 70 && latestState.Health == 52 && latestState.Mana == 17,
+    Require(latestState?.PositionX == 70 && latestState.Health == 52 && latestState.Mana == 17
+            && latestState.Level == 3 && latestState.Experience == 300,
         "世界服应能读取最新状态而非沿用旧票据快照");
 }
 
@@ -901,13 +958,14 @@ static async Task WorldStateBatchPersistsLatestVersions()
         [
             new CharacterWorldState(firstId, "local-field", 10, 10, savedAt, 90, 20),
             new CharacterWorldState(secondId, "local-field", 20, 20, savedAt, 70, 40),
-            new CharacterWorldState(firstId, "local-field", 11, 12, savedAt.AddSeconds(1), 80, 19)
+            new CharacterWorldState(firstId, "local-field", 11, 12, savedAt.AddSeconds(1), 80, 19, 2, 105)
         ],
         CancellationToken.None);
 
     Require(savedCount == 2, "同一批中的重复角色应只写入最新状态");
     var first = await store.LoadWorldStateAsync(firstId, CancellationToken.None);
-    Require(first?.PositionX == 11 && first.PositionY == 12 && first.Health == 80,
+    Require(first?.PositionX == 11 && first.PositionY == 12 && first.Health == 80
+            && first.Level == 2 && first.Experience == 105,
         "批量保存应采用重复角色的最新版本");
 
     var nextCount = await store.SaveWorldStatesAsync(
@@ -971,7 +1029,9 @@ static Task WorldTicketCarriesAuthoritativeSpawn()
         78,
         CharacterArchetype.Assassin,
         42,
-        9);
+        9,
+        5,
+        CharacterProgression.ExperienceRequiredForLevel(5));
     var validation = CreateTicketProtector().Validate(ticket.Token, "local", now);
     Require(validation.IsSuccess, "带出生状态的票据应验证成功");
     Require(
@@ -980,8 +1040,10 @@ static Task WorldTicketCarriesAuthoritativeSpawn()
         && validation.Claims.PositionY == 78
         && validation.Claims.Archetype == CharacterArchetype.Assassin
         && validation.Claims.Health == 42
-        && validation.Claims.Mana == 9,
-        "票据应携带服务端保存的地图、坐标、职业和资源");
+        && validation.Claims.Mana == 9
+        && validation.Claims.Level == 5
+        && validation.Claims.Experience == CharacterProgression.ExperienceRequiredForLevel(5),
+        "票据应携带服务端保存的地图、坐标、职业、资源和成长状态");
     return Task.CompletedTask;
 }
 

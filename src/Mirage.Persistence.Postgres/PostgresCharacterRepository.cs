@@ -34,7 +34,7 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
         const string sql = """
             SELECT character_id, account_id, name, normalized_name, archetype, level, created_at,
                    deletion_requested_at, delete_after, map_id, position_x, position_y,
-                   world_state_saved_at, health, mana
+                   world_state_saved_at, health, mana, experience
             FROM characters
             WHERE account_id = $1 AND character_id = $2
             """;
@@ -52,7 +52,7 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
         const string sql = """
             SELECT character_id, account_id, name, normalized_name, archetype, level, created_at,
                    deletion_requested_at, delete_after, map_id, position_x, position_y,
-                   world_state_saved_at, health, mana
+                   world_state_saved_at, health, mana, experience
             FROM characters
             WHERE account_id = $1
             ORDER BY created_at, character_id
@@ -145,7 +145,7 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
             WHERE account_id = $1 AND character_id = $2
             RETURNING character_id, account_id, name, normalized_name, archetype, level, created_at,
                       deletion_requested_at, delete_after, map_id, position_x, position_y,
-                      world_state_saved_at, health, mana
+                      world_state_saved_at, health, mana, experience
             """;
         await using var command = dataSource.CreateCommand(sql);
         command.Parameters.AddWithValue(accountId);
@@ -167,7 +167,9 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
                 position_y = $4,
                 world_state_saved_at = $5,
                 health = COALESCE($6, health),
-                mana = COALESCE($7, mana)
+                mana = COALESCE($7, mana),
+                level = $8,
+                experience = $9
             WHERE character_id = $1
               AND (world_state_saved_at IS NULL OR world_state_saved_at <= $5)
             """;
@@ -181,6 +183,8 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
             Value = (object?)state.Health ?? DBNull.Value });
         command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer,
             Value = (object?)state.Mana ?? DBNull.Value });
+        command.Parameters.AddWithValue(state.Level);
+        command.Parameters.AddWithValue(state.Experience);
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
@@ -197,12 +201,12 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
         const string sql = """
             WITH incoming (
                 character_id, map_id, position_x, position_y, saved_at,
-                health, has_health, mana, has_mana) AS (
+                health, has_health, mana, has_mana, level, experience) AS (
                 SELECT *
                 FROM unnest(
                     $1::uuid[], $2::varchar[], $3::integer[], $4::integer[],
                     $5::timestamptz[], $6::integer[], $7::boolean[],
-                    $8::integer[], $9::boolean[])
+                    $8::integer[], $9::boolean[], $10::integer[], $11::bigint[])
             )
             UPDATE characters AS c
             SET map_id = incoming.map_id,
@@ -210,7 +214,9 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
                 position_y = incoming.position_y,
                 world_state_saved_at = incoming.saved_at,
                 health = CASE WHEN incoming.has_health THEN incoming.health ELSE c.health END,
-                mana = CASE WHEN incoming.has_mana THEN incoming.mana ELSE c.mana END
+                mana = CASE WHEN incoming.has_mana THEN incoming.mana ELSE c.mana END,
+                level = incoming.level,
+                experience = incoming.experience
             FROM incoming
             WHERE c.character_id = incoming.character_id
               AND (c.world_state_saved_at IS NULL
@@ -245,6 +251,12 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
         command.Parameters.AddWithValue(
             NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Boolean,
             batch.Select(state => state.Mana.HasValue).ToArray());
+        command.Parameters.AddWithValue(
+            NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer,
+            batch.Select(state => state.Level).ToArray());
+        command.Parameters.AddWithValue(
+            NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Bigint,
+            batch.Select(state => state.Experience).ToArray());
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -253,7 +265,8 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
         CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT map_id, position_x, position_y, world_state_saved_at, health, mana
+            SELECT map_id, position_x, position_y, world_state_saved_at, health, mana,
+                   level, experience
             FROM characters
             WHERE character_id = $1
             """;
@@ -268,7 +281,8 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
         return new CharacterWorldState(characterId, reader.GetString(0), reader.GetInt32(1),
             reader.GetInt32(2), new DateTimeOffset(reader.GetDateTime(3), TimeSpan.Zero),
             reader.IsDBNull(4) ? null : reader.GetInt32(4),
-            reader.IsDBNull(5) ? null : reader.GetInt32(5));
+            reader.IsDBNull(5) ? null : reader.GetInt32(5),
+            reader.GetInt32(6), reader.GetInt64(7));
     }
 
     public async ValueTask<IReadOnlyList<CharacterDeletionAudit>> PurgeDueDeletionsAsync(
@@ -445,7 +459,9 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
                     position_y = $4,
                     world_state_saved_at = $5,
                     health = COALESCE($6, health),
-                    mana = COALESCE($7, mana)
+                    mana = COALESCE($7, mana),
+                    level = $8,
+                    experience = $9
                 WHERE character_id = $1
                   AND (world_state_saved_at IS NULL OR world_state_saved_at <= $5)
                 """;
@@ -458,6 +474,8 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
                 Value = (object?)worldState.Health ?? DBNull.Value });
             updateWorld.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer,
                 Value = (object?)worldState.Mana ?? DBNull.Value });
+            updateWorld.Parameters.AddWithValue(worldState.Level);
+            updateWorld.Parameters.AddWithValue(worldState.Experience);
             await updateWorld.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -555,5 +573,6 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
             reader.GetInt32(11),
             reader.IsDBNull(12) ? null : new DateTimeOffset(reader.GetDateTime(12), TimeSpan.Zero),
             reader.IsDBNull(13) ? null : reader.GetInt32(13),
-            reader.IsDBNull(14) ? null : reader.GetInt32(14));
+            reader.IsDBNull(14) ? null : reader.GetInt32(14),
+            reader.GetInt64(15));
 }

@@ -18,7 +18,9 @@ public sealed record WorldEntryTicketClaims(
     DateTimeOffset IssuedAt,
     DateTimeOffset ExpiresAt,
     int? Health = null,
-    int? Mana = null);
+    int? Mana = null,
+    int Level = CharacterProgression.MinimumLevel,
+    long Experience = 0);
 
 public sealed record IssuedWorldEntryTicket(string Token, WorldEntryTicketClaims Claims);
 
@@ -67,7 +69,9 @@ public sealed class HmacWorldEntryTicketProtector
         int positionY = 64,
         CharacterArchetype archetype = CharacterArchetype.Warrior,
         int? health = null,
-        int? mana = null)
+        int? mana = null,
+        int level = CharacterProgression.MinimumLevel,
+        long experience = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(realmId);
         ArgumentException.ThrowIfNullOrWhiteSpace(mapId);
@@ -83,7 +87,9 @@ public sealed class HmacWorldEntryTicketProtector
             now,
             now.Add(_lifetime),
             health,
-            mana);
+            mana,
+            level,
+            experience);
         var payload = JsonSerializer.SerializeToUtf8Bytes(claims, JsonOptions);
         var signature = HMACSHA256.HashData(_signingKey, payload);
         return new IssuedWorldEntryTicket(
@@ -127,7 +133,11 @@ public sealed class HmacWorldEntryTicketProtector
             || string.IsNullOrWhiteSpace(claims.MapId)
             || !Enum.IsDefined(claims.Archetype)
             || claims.Health is < 0
-            || claims.Mana is < 0)
+            || claims.Mana is < 0
+            || claims.Level is < CharacterProgression.MinimumLevel or > CharacterProgression.MaximumLevel
+            || claims.Experience < CharacterProgression.ExperienceRequiredForLevel(claims.Level)
+            || (claims.Level < CharacterProgression.MaximumLevel
+                && claims.Experience >= CharacterProgression.ExperienceRequiredForLevel(claims.Level + 1)))
         {
             return Failure(TicketValidationFailure.Malformed);
         }

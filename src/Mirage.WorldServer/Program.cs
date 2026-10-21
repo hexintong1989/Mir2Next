@@ -138,6 +138,8 @@ app.Map("/ws/v1/world", async context =>
         validation.Claims.Archetype,
         validation.Claims.Health,
         validation.Claims.Mana,
+        validation.Claims.Level,
+        validation.Claims.Experience,
         true,
         context.RequestAborted);
 });
@@ -169,6 +171,8 @@ if (app.Environment.IsDevelopment())
             CharacterArchetype.Warrior,
             null,
             null,
+            CharacterProgression.MinimumLevel,
+            0,
             false,
             context.RequestAborted);
     });
@@ -410,7 +414,12 @@ static PlayerPositionResponse ToPositionResponse(WorldPlayer player) =>
         player.Defense,
         player.AttackCooldownTicks,
         player.Mana,
-        player.MaximumMana);
+        player.MaximumMana,
+        player.Level,
+        player.Experience,
+        player.Level < CharacterProgression.MaximumLevel
+            ? CharacterProgression.ExperienceRequiredForLevel(player.Level + 1)
+            : null);
 
 static MonsterResponse ToMonsterResponse(WorldMonster monster) =>
     new(

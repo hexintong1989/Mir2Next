@@ -29,6 +29,8 @@ public sealed class WorldSocketHub(
         CharacterArchetype archetype,
         int? health,
         int? mana,
+        int level,
+        long experience,
         bool findAvailableSpawn,
         CancellationToken cancellationToken)
     {
@@ -51,6 +53,8 @@ public sealed class WorldSocketHub(
             spawn = new GridPosition(latest.PositionX, latest.PositionY);
             health = latest.Health ?? health;
             mana = latest.Mana ?? mana;
+            level = latest.Level;
+            experience = latest.Experience;
         }
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync();
@@ -65,7 +69,7 @@ public sealed class WorldSocketHub(
         }
 
         var join = findAvailableSpawn
-            ? world.JoinAtAvailablePosition(characterId, spawn, archetype)
+            ? world.JoinAtAvailablePosition(characterId, spawn, archetype, level, experience)
             : world.Join(characterId, spawn);
         if (!join.IsSuccess && join.Failure != JoinFailure.AlreadyJoined)
         {
@@ -96,7 +100,9 @@ public sealed class WorldSocketHub(
                             skillId = skill.SkillId,
                             range = skill.Range,
                             manaCost = skill.ManaCost,
-                            cooldownTicks = skill.CooldownTicks
+                            cooldownTicks = skill.CooldownTicks,
+                            minimumLevel = skill.MinimumLevel,
+                            unlocked = world.FindPlayer(characterId)!.Level >= skill.MinimumLevel
                         })
                 }), cancellationToken);
             await RefreshVisibilityAsync(null, cancellationToken);
@@ -249,6 +255,16 @@ public sealed class WorldSocketHub(
                 {
                     await BroadcastDropSnapshotAsync(cancellationToken);
                 }
+                if (attack.ExperienceGained > 0)
+                {
+                    await SendProgressionAsync(
+                        connection,
+                        attack.Player,
+                        attack.ExperienceGained,
+                        attack.LevelsGained,
+                        cancellationToken);
+                    await TryPersistWorldStateAsync(attack.Player, cancellationToken);
+                }
                 await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
                 continue;
             }
@@ -285,6 +301,16 @@ public sealed class WorldSocketHub(
                 if (skill.Drop is not null)
                 {
                     await BroadcastDropSnapshotAsync(cancellationToken);
+                }
+                if (skill.ExperienceGained > 0)
+                {
+                    await SendProgressionAsync(
+                        connection,
+                        skill.Player,
+                        skill.ExperienceGained,
+                        skill.LevelsGained,
+                        cancellationToken);
+                    await TryPersistWorldStateAsync(skill.Player, cancellationToken);
                 }
                 await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
                 continue;
@@ -571,7 +597,9 @@ public sealed class WorldSocketHub(
                     player.Position.Y,
                     DateTimeOffset.UtcNow,
                     player.Health,
-                    player.Mana),
+                    player.Mana,
+                    player.Level,
+                    player.Experience),
                 cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -607,7 +635,9 @@ public sealed class WorldSocketHub(
                     player.Position.Y,
                     savedAt,
                     player.Health,
-                    player.Mana),
+                    player.Mana,
+                    player.Level,
+                    player.Experience),
                 cancellationToken);
             if (!saved)
             {
@@ -682,6 +712,19 @@ public sealed class WorldSocketHub(
         }
     }
 
+    private static Task SendProgressionAsync(
+        ClientConnection connection,
+        WorldPlayer player,
+        int experienceGained,
+        int levelsGained,
+        CancellationToken cancellationToken) =>
+        connection.SendAsync(new ServerEnvelope("progression", new
+        {
+            experienceGained,
+            levelsGained,
+            player = ToPositionResponse(player)
+        }), cancellationToken);
+
     private static PlayerPositionResponse ToPositionResponse(WorldPlayer player) =>
         new(
             player.CharacterId,
@@ -697,7 +740,12 @@ public sealed class WorldSocketHub(
             player.Defense,
             player.AttackCooldownTicks,
             player.Mana,
-            player.MaximumMana);
+            player.MaximumMana,
+            player.Level,
+            player.Experience,
+            player.Level < CharacterProgression.MaximumLevel
+                ? CharacterProgression.ExperienceRequiredForLevel(player.Level + 1)
+                : null);
 
     private static MonsterResponse ToMonsterResponse(WorldMonster monster) =>
         new(

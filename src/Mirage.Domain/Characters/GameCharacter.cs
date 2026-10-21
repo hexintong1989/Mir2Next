@@ -19,7 +19,8 @@ public sealed record GameCharacter(
     int PositionY = 64,
     DateTimeOffset? WorldStateSavedAt = null,
     int? Health = null,
-    int? Mana = null)
+    int? Mana = null,
+    long Experience = 0)
 {
     public bool IsPendingDeletion => DeletionRequestedAt is not null;
 }
@@ -31,7 +32,9 @@ public sealed record CharacterWorldState(
     int PositionY,
     DateTimeOffset SavedAt,
     int? Health = null,
-    int? Mana = null);
+    int? Mana = null,
+    int Level = 1,
+    long Experience = 0);
 
 public sealed record CharacterDeletionAudit(
     Guid CharacterId,
