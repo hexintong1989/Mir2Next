@@ -29,6 +29,8 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("攻击会校验距离、冷却和消息序号", AttackValidatesRangeCooldownAndSequence),
     ("怪物会在固定帧追踪附近玩家", MonsterMovesTowardNearbyPlayer),
     ("死亡怪物会按固定帧刷新", DefeatedMonsterRespawns),
+    ("怪物死亡掉落具有击杀者保护期", MonsterDropHasOwnerProtection),
+    ("拾取指令在世界帧结算并进入背包", PickupExecutesOnWorldTick),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -355,6 +357,46 @@ static Task DefeatedMonsterRespawns()
     Require(respawned.Health == respawned.MaximumHealth, "刷新怪物应恢复满血");
     Require(respawned.Position == new GridPosition(2, 1), "刷新怪物应回到出生点");
     return Task.CompletedTask;
+}
+
+static Task MonsterDropHasOwnerProtection()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var owner = Guid.NewGuid();
+    var other = Guid.NewGuid();
+    var monsterId = Guid.NewGuid();
+    world.Join(owner, new GridPosition(1, 1));
+    world.Join(other, new GridPosition(1, 2));
+    world.SpawnMonster(monsterId, "slime", new GridPosition(2, 1), 1, 10, "slime_gel");
+    var attack = world.Attack(owner, 1, monsterId, 5);
+    var drop = attack.Drop!;
+
+    Require(attack.Defeated && drop.ItemId == "slime_gel", "击杀应生成配置的掉落");
+    Require(
+        world.Pickup(other, 1, drop.DropId, 5).Failure == PickupFailure.Protected,
+        "保护期内其他角色不能拾取");
+    var publicPickup = world.Pickup(other, 2, drop.DropId, drop.OwnerProtectionUntilTick);
+    Require(publicPickup.IsSuccess, "保护期结束后其他角色可以拾取");
+    Require(world.InventorySnapshot(other).Single().ItemId == "slime_gel", "物品应进入拾取者背包");
+    return Task.CompletedTask;
+}
+
+static async Task PickupExecutesOnWorldTick()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var owner = Guid.NewGuid();
+    var monsterId = Guid.NewGuid();
+    world.Join(owner, new GridPosition(1, 1));
+    world.SpawnMonster(monsterId, "slime", new GridPosition(2, 1), 1, 10, "slime_gel");
+    var attack = world.Attack(owner, 1, monsterId, 1);
+    var simulation = new WorldSimulation(world);
+
+    var pending = simulation.QueuePickupAsync(owner, 2, attack.Drop!.DropId).AsTask();
+    Require(!pending.IsCompleted, "拾取不应绕过世界帧");
+    simulation.Tick();
+    var result = await pending;
+    Require(result.IsSuccess && result.InventoryItem?.Quantity == 1, "世界帧应完成拾取并更新背包");
+    Require(world.DropSnapshot().Count == 0, "已拾取掉落应从地面移除");
 }
 
 static async Task CharacterOwnershipIsEnforced()

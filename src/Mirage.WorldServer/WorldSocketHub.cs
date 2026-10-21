@@ -62,6 +62,8 @@ public sealed class WorldSocketHub(
                 }), cancellationToken);
             await RefreshVisibilityAsync(null, cancellationToken);
             await SendMonsterSnapshotAsync(connection, cancellationToken);
+            await SendDropSnapshotAsync(connection, cancellationToken);
+            await SendInventorySnapshotAsync(connection, cancellationToken);
             await ReceiveLoopAsync(connection, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -177,6 +179,7 @@ public sealed class WorldSocketHub(
                 }
                 await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
                 await SendMonsterSnapshotAsync(connection, cancellationToken);
+                await SendDropSnapshotAsync(connection, cancellationToken);
                 continue;
             }
 
@@ -201,7 +204,44 @@ public sealed class WorldSocketHub(
                 }
 
                 await BroadcastMonsterUpdateAsync(attack, cancellationToken);
+                if (attack.Drop is not null)
+                {
+                    await BroadcastDropSnapshotAsync(cancellationToken);
+                }
                 await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
+                continue;
+            }
+
+            if (string.Equals(message.Type, "pickup", StringComparison.Ordinal)
+                && message.DropId != Guid.Empty)
+            {
+                var pickup = await simulation.QueuePickupAsync(
+                    connection.CharacterId,
+                    message.Sequence,
+                    message.DropId,
+                    cancellationToken);
+                if (!pickup.IsSuccess)
+                {
+                    await connection.SendAsync(
+                        new ServerEnvelope("pickupRejected", new
+                        {
+                            sequence = message.Sequence,
+                            code = pickup.Failure.ToString()
+                        }),
+                        cancellationToken);
+                    continue;
+                }
+
+                await connection.SendAsync(
+                    new ServerEnvelope("pickupResult", new
+                    {
+                        removedDropId = pickup.Drop!.DropId,
+                        inventoryItem = new InventoryItemResponse(
+                            pickup.InventoryItem!.ItemId,
+                            pickup.InventoryItem.Quantity)
+                    }),
+                    cancellationToken);
+                await BroadcastDropSnapshotAsync(cancellationToken);
                 continue;
             }
 
@@ -229,6 +269,41 @@ public sealed class WorldSocketHub(
         foreach (var connection in _connections.Values)
         {
             await SendMonsterSnapshotAsync(connection, cancellationToken);
+            await SendDropSnapshotAsync(connection, cancellationToken);
+        }
+    }
+
+    private Task SendDropSnapshotAsync(
+        ClientConnection connection,
+        CancellationToken cancellationToken) =>
+        connection.SendAsync(
+            new ServerEnvelope(
+                "dropSnapshot",
+                new
+                {
+                    drops = world.DropsVisibleTo(connection.CharacterId, AoiRadius)
+                        .Select(ToDropResponse)
+                }),
+            cancellationToken);
+
+    private Task SendInventorySnapshotAsync(
+        ClientConnection connection,
+        CancellationToken cancellationToken) =>
+        connection.SendAsync(
+            new ServerEnvelope(
+                "inventorySnapshot",
+                new
+                {
+                    items = world.InventorySnapshot(connection.CharacterId)
+                        .Select(item => new InventoryItemResponse(item.ItemId, item.Quantity))
+                }),
+            cancellationToken);
+
+    private async Task BroadcastDropSnapshotAsync(CancellationToken cancellationToken)
+    {
+        foreach (var connection in _connections.Values)
+        {
+            await SendDropSnapshotAsync(connection, cancellationToken);
         }
     }
 
@@ -334,12 +409,23 @@ public sealed class WorldSocketHub(
             monster.Health,
             monster.MaximumHealth);
 
+    private static GroundDropResponse ToDropResponse(WorldDrop drop) =>
+        new(
+            drop.DropId,
+            drop.ItemId,
+            drop.Quantity,
+            drop.Position.X,
+            drop.Position.Y,
+            drop.OwnerCharacterId,
+            drop.OwnerProtectionUntilTick);
+
     private sealed record ClientEnvelope(
         string? Type,
         long Sequence,
         int X,
         int Y,
-        Guid MonsterId);
+        Guid MonsterId,
+        Guid DropId);
     private sealed record ServerEnvelope(string Type, object Payload);
 
     private sealed class ClientConnection(Guid characterId, WebSocket socket)

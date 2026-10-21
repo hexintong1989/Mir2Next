@@ -18,6 +18,10 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 {"type":"attack","sequence":2,"monsterId":"10000000-0000-0000-0000-000000000001"}
 ```
 
+```json
+{"type":"pickup","sequence":3,"dropId":"00000000-0000-0000-0000-000000000001"}
+```
+
 `sequence` 由移动与攻击共用，对每个角色必须单调递增。基础攻击由服务端检查目标存在、近战距离、10帧冷却并结算伤害。消息必须是 UTF-8 JSON 文本且不超过 4096 字节。
 
 ## 服务端消息
@@ -28,6 +32,9 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 - `monsterSnapshot`：观察者当前视野内的怪物完整列表。
 - `monsterUpdated`：怪物受伤后的权威血量、伤害和死亡状态。
 - `attackRejected`：攻击因目标、距离、冷却或序号不合法而被拒绝。
+- `dropSnapshot`：视野内地面物品及其击杀者保护截止帧。
+- `inventorySnapshot`：角色进入世界时的服务端背包快照。
+- `pickupResult` / `pickupRejected`：拾取后的堆叠数量或拒绝原因。
 - `protocolError`：JSON、消息类型或帧类型错误。
 
 所有位置均以服务端状态为准。客户端只能发送移动意图，不得直接设置最终状态。

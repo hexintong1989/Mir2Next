@@ -28,6 +28,17 @@ public enum AttackFailure
     Cooldown
 }
 
+public enum PickupFailure
+{
+    None,
+    PlayerNotFound,
+    DropNotFound,
+    StaleSequence,
+    OutOfRange,
+    Protected,
+    InventoryFull
+}
+
 public sealed record WorldPlayer(
     Guid CharacterId,
     GridPosition Position,
@@ -41,6 +52,16 @@ public sealed record WorldMonster(
     int Level,
     int Health,
     int MaximumHealth);
+
+public sealed record WorldDrop(
+    Guid DropId,
+    string ItemId,
+    int Quantity,
+    GridPosition Position,
+    Guid OwnerCharacterId,
+    long OwnerProtectionUntilTick);
+
+public sealed record InventoryItem(string ItemId, int Quantity);
 
 public readonly record struct JoinResult(JoinFailure Failure, WorldPlayer? Player)
 {
@@ -57,9 +78,19 @@ public readonly record struct AttackResult(
     WorldPlayer Player,
     WorldMonster? Monster,
     int Damage,
-    bool Defeated)
+    bool Defeated,
+    WorldDrop? Drop)
 {
     public bool IsSuccess => Failure == AttackFailure.None;
+}
+
+public readonly record struct PickupResult(
+    PickupFailure Failure,
+    WorldPlayer Player,
+    WorldDrop? Drop,
+    InventoryItem? InventoryItem)
+{
+    public bool IsSuccess => Failure == PickupFailure.None;
 }
 
 public sealed class WorldInstance
@@ -69,11 +100,16 @@ public sealed class WorldInstance
     public const int MonsterBehaviorIntervalTicks = 20;
     public const int MonsterRespawnTicks = 100;
     public const int MonsterAggroRadius = 8;
+    public const int DropOwnerProtectionTicks = 200;
+    public const int InventorySlotLimit = 20;
     private readonly object _gate = new();
     private readonly Dictionary<Guid, WorldPlayer> _players = [];
     private readonly Dictionary<Guid, WorldMonster> _monsters = [];
     private readonly Dictionary<Guid, MonsterSpawn> _monsterSpawns = [];
+    private readonly Dictionary<Guid, WorldDrop> _groundDrops = [];
+    private readonly Dictionary<Guid, Dictionary<string, int>> _inventories = [];
     private readonly HashSet<GridPosition> _occupiedPositions = [];
+    private long _nextDropSequence;
 
     public WorldInstance(string mapId, int width, int height)
     {
@@ -119,11 +155,13 @@ public sealed class WorldInstance
         string templateId,
         GridPosition position,
         int level,
-        int maximumHealth)
+        int maximumHealth,
+        string dropItemId = "gold")
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(templateId);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(level);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumHealth);
+        ArgumentException.ThrowIfNullOrWhiteSpace(dropItemId);
         lock (_gate)
         {
             if (_monsterSpawns.ContainsKey(monsterId)
@@ -150,6 +188,7 @@ public sealed class WorldInstance
                     position,
                     level,
                     maximumHealth,
+                    dropItemId,
                     null));
             _occupiedPositions.Add(position);
             return true;
@@ -177,6 +216,7 @@ public sealed class WorldInstance
 
             var player = new WorldPlayer(characterId, spawn, 0);
             _players.Add(characterId, player);
+            _inventories.TryAdd(characterId, new Dictionary<string, int>(StringComparer.Ordinal));
             _occupiedPositions.Add(spawn);
             return new JoinResult(JoinFailure.None, player);
         }
@@ -202,6 +242,7 @@ public sealed class WorldInstance
 
                 var player = new WorldPlayer(characterId, candidate, 0);
                 _players.Add(characterId, player);
+                _inventories.TryAdd(characterId, new Dictionary<string, int>(StringComparer.Ordinal));
                 _occupiedPositions.Add(candidate);
                 return new JoinResult(JoinFailure.None, player);
             }
@@ -267,29 +308,30 @@ public sealed class WorldInstance
                     new WorldPlayer(characterId, default, 0),
                     null,
                     0,
-                    false);
+                    false,
+                    null);
             }
 
             if (sequence <= player.LastProcessedSequence)
             {
-                return new AttackResult(AttackFailure.StaleSequence, player, null, 0, false);
+                return new AttackResult(AttackFailure.StaleSequence, player, null, 0, false, null);
             }
 
             player = player with { LastProcessedSequence = sequence };
             _players[characterId] = player;
             if (!_monsters.TryGetValue(monsterId, out var monster))
             {
-                return new AttackResult(AttackFailure.MonsterNotFound, player, null, 0, false);
+                return new AttackResult(AttackFailure.MonsterNotFound, player, null, 0, false, null);
             }
 
             if (player.Position.ChebyshevDistanceTo(monster.Position) > 1)
             {
-                return new AttackResult(AttackFailure.OutOfRange, player, monster, 0, false);
+                return new AttackResult(AttackFailure.OutOfRange, player, monster, 0, false, null);
             }
 
             if (currentTick - player.LastAttackTick < BasicAttackCooldownTicks)
             {
-                return new AttackResult(AttackFailure.Cooldown, player, monster, 0, false);
+                return new AttackResult(AttackFailure.Cooldown, player, monster, 0, false, null);
             }
 
             player = player with { LastAttackTick = currentTick };
@@ -298,6 +340,7 @@ public sealed class WorldInstance
             var health = monster.Health - damage;
             monster = monster with { Health = health };
             var defeated = health == 0;
+            WorldDrop? drop = null;
             if (defeated)
             {
                 _monsters.Remove(monsterId);
@@ -306,6 +349,11 @@ public sealed class WorldInstance
                 {
                     RespawnAtTick = currentTick + MonsterRespawnTicks
                 };
+                drop = CreateDrop(
+                    _monsterSpawns[monsterId].DropItemId,
+                    monster.Position,
+                    characterId,
+                    currentTick);
             }
             else
             {
@@ -317,7 +365,65 @@ public sealed class WorldInstance
                 player,
                 monster,
                 damage,
-                defeated);
+                defeated,
+                drop);
+        }
+    }
+
+    public PickupResult Pickup(
+        Guid characterId,
+        long sequence,
+        Guid dropId,
+        long currentTick)
+    {
+        lock (_gate)
+        {
+            if (!_players.TryGetValue(characterId, out var player))
+            {
+                return new PickupResult(
+                    PickupFailure.PlayerNotFound,
+                    new WorldPlayer(characterId, default, 0),
+                    null,
+                    null);
+            }
+
+            if (sequence <= player.LastProcessedSequence)
+            {
+                return new PickupResult(PickupFailure.StaleSequence, player, null, null);
+            }
+
+            player = player with { LastProcessedSequence = sequence };
+            _players[characterId] = player;
+            if (!_groundDrops.TryGetValue(dropId, out var drop))
+            {
+                return new PickupResult(PickupFailure.DropNotFound, player, null, null);
+            }
+
+            if (player.Position.ChebyshevDistanceTo(drop.Position) > 1)
+            {
+                return new PickupResult(PickupFailure.OutOfRange, player, drop, null);
+            }
+
+            if (drop.OwnerCharacterId != characterId && currentTick < drop.OwnerProtectionUntilTick)
+            {
+                return new PickupResult(PickupFailure.Protected, player, drop, null);
+            }
+
+            var inventory = _inventories[characterId];
+            if (!inventory.ContainsKey(drop.ItemId) && inventory.Count >= InventorySlotLimit)
+            {
+                return new PickupResult(PickupFailure.InventoryFull, player, drop, null);
+            }
+
+            inventory.TryGetValue(drop.ItemId, out var currentQuantity);
+            var quantity = checked(currentQuantity + drop.Quantity);
+            inventory[drop.ItemId] = quantity;
+            _groundDrops.Remove(dropId);
+            return new PickupResult(
+                PickupFailure.None,
+                player,
+                drop,
+                new InventoryItem(drop.ItemId, quantity));
         }
     }
 
@@ -356,6 +462,47 @@ public sealed class WorldInstance
         lock (_gate)
         {
             return _monsters.Values.OrderBy(monster => monster.MonsterId).ToArray();
+        }
+    }
+
+    public IReadOnlyList<WorldDrop> DropSnapshot()
+    {
+        lock (_gate)
+        {
+            return _groundDrops.Values.OrderBy(drop => drop.DropId).ToArray();
+        }
+    }
+
+    public IReadOnlyList<WorldDrop> DropsVisibleTo(Guid characterId, int radius)
+    {
+        if (radius is < 1 or > 64)
+        {
+            throw new ArgumentOutOfRangeException(nameof(radius), "AOI radius must be between 1 and 64.");
+        }
+
+        lock (_gate)
+        {
+            if (!_players.TryGetValue(characterId, out var observer))
+            {
+                return [];
+            }
+
+            return _groundDrops.Values
+                .Where(drop => observer.Position.ChebyshevDistanceTo(drop.Position) <= radius)
+                .OrderBy(drop => drop.DropId)
+                .ToArray();
+        }
+    }
+
+    public IReadOnlyList<InventoryItem> InventorySnapshot(Guid characterId)
+    {
+        lock (_gate)
+        {
+            return _inventories.TryGetValue(characterId, out var inventory)
+                ? inventory.OrderBy(item => item.Key, StringComparer.Ordinal)
+                    .Select(item => new InventoryItem(item.Key, item.Value))
+                    .ToArray()
+                : [];
         }
     }
 
@@ -472,11 +619,32 @@ public sealed class WorldInstance
     private bool Contains(GridPosition position) =>
         position.X >= 0 && position.X < Width && position.Y >= 0 && position.Y < Height;
 
+    private WorldDrop CreateDrop(
+        string itemId,
+        GridPosition position,
+        Guid ownerCharacterId,
+        long currentTick)
+    {
+        Span<byte> bytes = stackalloc byte[16];
+        ownerCharacterId.TryWriteBytes(bytes);
+        BitConverter.TryWriteBytes(bytes[8..], ++_nextDropSequence);
+        var drop = new WorldDrop(
+            new Guid(bytes),
+            itemId,
+            1,
+            position,
+            ownerCharacterId,
+            currentTick + DropOwnerProtectionTicks);
+        _groundDrops.Add(drop.DropId, drop);
+        return drop;
+    }
+
     private sealed record MonsterSpawn(
         Guid MonsterId,
         string TemplateId,
         GridPosition Position,
         int Level,
         int MaximumHealth,
+        string DropItemId,
         long? RespawnAtTick);
 }

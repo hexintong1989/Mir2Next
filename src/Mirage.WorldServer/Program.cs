@@ -11,19 +11,22 @@ world.SpawnMonster(
     "training_dummy",
     new GridPosition(66, 64),
     1,
-    30);
+    30,
+    "wooden_token");
 world.SpawnMonster(
     Guid.Parse("10000000-0000-0000-0000-000000000002"),
     "forest_deer",
     new GridPosition(68, 65),
     1,
-    40);
+    40,
+    "venison");
 world.SpawnMonster(
     Guid.Parse("10000000-0000-0000-0000-000000000003"),
     "scarecrow",
     new GridPosition(63, 67),
     2,
-    50);
+    50,
+    "cloth_scrap");
 builder.Services.AddSingleton(world);
 builder.Services.AddSingleton<WorldSimulation>();
 builder.Services.AddHostedService<WorldTickService>();
@@ -194,6 +197,35 @@ if (app.Environment.IsDevelopment())
             result.Monster is null ? null : ToMonsterResponse(result.Monster)));
     });
 
+    app.MapPost("/internal/dev/players/{characterId:guid}/pickup", async (
+        Guid characterId,
+        PickupRequest request,
+        WorldSimulation simulation,
+        CancellationToken cancellationToken) =>
+    {
+        var result = await simulation.QueuePickupAsync(
+            characterId,
+            request.Sequence,
+            request.DropId,
+            cancellationToken);
+        return Results.Ok(new PickupResponse(
+            result.IsSuccess,
+            result.IsSuccess ? null : result.Failure.ToString(),
+            result.Drop is null ? null : ToDropResponse(result.Drop),
+            result.InventoryItem is null
+                ? null
+                : new InventoryItemResponse(result.InventoryItem.ItemId, result.InventoryItem.Quantity)));
+    });
+
+    app.MapGet("/internal/dev/players/{characterId:guid}/inventory", (
+        Guid characterId,
+        WorldInstance world) =>
+        Results.Ok(world.InventorySnapshot(characterId)
+            .Select(item => new InventoryItemResponse(item.ItemId, item.Quantity))));
+
+    app.MapGet("/internal/dev/drops", (WorldInstance world) =>
+        Results.Ok(world.DropSnapshot().Select(ToDropResponse)));
+
     app.MapPost("/internal/dev/monsters", (
         SpawnMonsterRequest request,
         WorldInstance world) =>
@@ -254,6 +286,16 @@ static MonsterResponse ToMonsterResponse(WorldMonster monster) =>
         monster.Level,
         monster.Health,
         monster.MaximumHealth);
+
+static GroundDropResponse ToDropResponse(WorldDrop drop) =>
+    new(
+        drop.DropId,
+        drop.ItemId,
+        drop.Quantity,
+        drop.Position.X,
+        drop.Position.Y,
+        drop.OwnerCharacterId,
+        drop.OwnerProtectionUntilTick);
 
 static HmacWorldEntryTicketProtector? CreateTicketProtector(IConfiguration configuration)
 {

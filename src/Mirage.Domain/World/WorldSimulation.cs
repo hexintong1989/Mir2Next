@@ -49,6 +49,19 @@ public sealed class WorldSimulation
         return await completion.Task.WaitAsync(cancellationToken);
     }
 
+    public async ValueTask<PickupResult> QueuePickupAsync(
+        Guid characterId,
+        long sequence,
+        Guid dropId,
+        CancellationToken cancellationToken = default)
+    {
+        var completion = new TaskCompletionSource<PickupResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var command = new PickupCommand(characterId, sequence, dropId, completion, cancellationToken);
+        await _commands.Writer.WriteAsync(command, cancellationToken);
+        return await completion.Task.WaitAsync(cancellationToken);
+    }
+
     public int Tick(int maximumCommands = 1024)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumCommands);
@@ -101,6 +114,19 @@ public sealed class WorldSimulation
     {
         public void Execute(WorldInstance world, long currentTick) =>
             Completion.TrySetResult(world.Attack(CharacterId, Sequence, MonsterId, currentTick));
+
+        public void Cancel() => Completion.TrySetCanceled(CancellationToken);
+    }
+
+    private sealed record PickupCommand(
+        Guid CharacterId,
+        long Sequence,
+        Guid DropId,
+        TaskCompletionSource<PickupResult> Completion,
+        CancellationToken CancellationToken) : IWorldCommand
+    {
+        public void Execute(WorldInstance world, long currentTick) =>
+            Completion.TrySetResult(world.Pickup(CharacterId, Sequence, DropId, currentTick));
 
         public void Cancel() => Completion.TrySetCanceled(CancellationToken);
     }
