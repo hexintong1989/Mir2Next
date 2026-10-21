@@ -62,6 +62,32 @@ public sealed class WorldSimulation
         return await completion.Task.WaitAsync(cancellationToken);
     }
 
+    public async ValueTask<EquipmentResult> QueueEquipAsync(
+        Guid characterId,
+        long sequence,
+        string itemId,
+        CancellationToken cancellationToken = default)
+    {
+        var completion = new TaskCompletionSource<EquipmentResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var command = new EquipCommand(characterId, sequence, itemId, completion, cancellationToken);
+        await _commands.Writer.WriteAsync(command, cancellationToken);
+        return await completion.Task.WaitAsync(cancellationToken);
+    }
+
+    public async ValueTask<EquipmentResult> QueueUnequipAsync(
+        Guid characterId,
+        long sequence,
+        EquipmentSlot slot,
+        CancellationToken cancellationToken = default)
+    {
+        var completion = new TaskCompletionSource<EquipmentResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var command = new UnequipCommand(characterId, sequence, slot, completion, cancellationToken);
+        await _commands.Writer.WriteAsync(command, cancellationToken);
+        return await completion.Task.WaitAsync(cancellationToken);
+    }
+
     public int Tick(int maximumCommands = 1024)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumCommands);
@@ -127,6 +153,32 @@ public sealed class WorldSimulation
     {
         public void Execute(WorldInstance world, long currentTick) =>
             Completion.TrySetResult(world.Pickup(CharacterId, Sequence, DropId, currentTick));
+
+        public void Cancel() => Completion.TrySetCanceled(CancellationToken);
+    }
+
+    private sealed record EquipCommand(
+        Guid CharacterId,
+        long Sequence,
+        string ItemId,
+        TaskCompletionSource<EquipmentResult> Completion,
+        CancellationToken CancellationToken) : IWorldCommand
+    {
+        public void Execute(WorldInstance world, long currentTick) =>
+            Completion.TrySetResult(world.Equip(CharacterId, Sequence, ItemId));
+
+        public void Cancel() => Completion.TrySetCanceled(CancellationToken);
+    }
+
+    private sealed record UnequipCommand(
+        Guid CharacterId,
+        long Sequence,
+        EquipmentSlot Slot,
+        TaskCompletionSource<EquipmentResult> Completion,
+        CancellationToken CancellationToken) : IWorldCommand
+    {
+        public void Execute(WorldInstance world, long currentTick) =>
+            Completion.TrySetResult(world.Unequip(CharacterId, Sequence, Slot));
 
         public void Cancel() => Completion.TrySetCanceled(CancellationToken);
     }

@@ -131,6 +131,7 @@ public sealed class WorldInstance
     private readonly Dictionary<Guid, MonsterSpawn> _monsterSpawns = [];
     private readonly Dictionary<Guid, WorldDrop> _groundDrops = [];
     private readonly Dictionary<Guid, Dictionary<string, int>> _inventories = [];
+    private readonly Dictionary<Guid, Dictionary<EquipmentSlot, string>> _equipment = [];
     private readonly Dictionary<Guid, GridPosition> _playerSpawns = [];
     private readonly HashSet<GridPosition> _occupiedPositions = [];
     private long _nextDropSequence;
@@ -242,6 +243,7 @@ public sealed class WorldInstance
             _players.Add(characterId, player);
             _playerSpawns[characterId] = spawn;
             _inventories.TryAdd(characterId, new Dictionary<string, int>(StringComparer.Ordinal));
+            _equipment.TryAdd(characterId, []);
             _occupiedPositions.Add(spawn);
             return new JoinResult(JoinFailure.None, player);
         }
@@ -272,6 +274,7 @@ public sealed class WorldInstance
                 _players.Add(characterId, player);
                 _playerSpawns[characterId] = candidate;
                 _inventories.TryAdd(characterId, new Dictionary<string, int>(StringComparer.Ordinal));
+                _equipment.TryAdd(characterId, []);
                 _occupiedPositions.Add(candidate);
                 return new JoinResult(JoinFailure.None, player);
             }
@@ -557,6 +560,99 @@ public sealed class WorldInstance
         }
     }
 
+    public IReadOnlyList<EquippedItem> EquipmentSnapshot(Guid characterId)
+    {
+        lock (_gate)
+        {
+            return _equipment.TryGetValue(characterId, out var equipment)
+                ? equipment.OrderBy(item => item.Key)
+                    .Select(item => new EquippedItem(item.Key, item.Value))
+                    .ToArray()
+                : [];
+        }
+    }
+
+    public EquipmentResult Equip(Guid characterId, long sequence, string itemId)
+    {
+        lock (_gate)
+        {
+            if (!TryBeginEquipmentCommand(characterId, sequence, out var player, out var failure))
+            {
+                return EquipmentFailureResult(failure, player);
+            }
+
+            if (!EquipmentCatalog.TryGet(itemId, out var definition))
+            {
+                return EquipmentFailureResult(EquipmentFailure.ItemNotEquippable, player);
+            }
+
+            var inventory = _inventories[characterId];
+            if (!inventory.TryGetValue(itemId, out var quantity) || quantity <= 0)
+            {
+                return EquipmentFailureResult(EquipmentFailure.ItemNotFound, player);
+            }
+
+            if (quantity == 1)
+            {
+                inventory.Remove(itemId);
+            }
+            else
+            {
+                inventory[itemId] = quantity - 1;
+            }
+
+            var equipment = _equipment[characterId];
+            if (equipment.TryGetValue(definition.Slot, out var replacedItemId))
+            {
+                inventory.TryGetValue(replacedItemId, out var replacedQuantity);
+                inventory[replacedItemId] = checked(replacedQuantity + 1);
+            }
+
+            equipment[definition.Slot] = itemId;
+            player = ApplyEquipmentStats(player);
+            _players[characterId] = player;
+            return new EquipmentResult(
+                EquipmentFailure.None,
+                player,
+                InventorySnapshot(characterId),
+                EquipmentSnapshot(characterId));
+        }
+    }
+
+    public EquipmentResult Unequip(Guid characterId, long sequence, EquipmentSlot slot)
+    {
+        lock (_gate)
+        {
+            if (!TryBeginEquipmentCommand(characterId, sequence, out var player, out var failure))
+            {
+                return EquipmentFailureResult(failure, player);
+            }
+
+            var equipment = _equipment[characterId];
+            if (!equipment.TryGetValue(slot, out var itemId))
+            {
+                return EquipmentFailureResult(EquipmentFailure.SlotEmpty, player);
+            }
+
+            var inventory = _inventories[characterId];
+            if (!inventory.ContainsKey(itemId) && inventory.Count >= InventorySlotLimit)
+            {
+                return EquipmentFailureResult(EquipmentFailure.InventoryFull, player);
+            }
+
+            inventory.TryGetValue(itemId, out var quantity);
+            inventory[itemId] = checked(quantity + 1);
+            equipment.Remove(slot);
+            player = ApplyEquipmentStats(player);
+            _players[characterId] = player;
+            return new EquipmentResult(
+                EquipmentFailure.None,
+                player,
+                InventorySnapshot(characterId),
+                EquipmentSnapshot(characterId));
+        }
+    }
+
     public void ReplaceInventory(Guid characterId, IReadOnlyList<InventoryItem> items)
     {
         ArgumentNullException.ThrowIfNull(items);
@@ -767,6 +863,65 @@ public sealed class WorldInstance
             Archetype: archetype, AttackPower: 13, Defense: 1, AttackCooldownTicks: 8),
         _ => throw new ArgumentOutOfRangeException(nameof(archetype))
     };
+
+    private bool TryBeginEquipmentCommand(
+        Guid characterId,
+        long sequence,
+        out WorldPlayer player,
+        out EquipmentFailure failure)
+    {
+        if (!_players.TryGetValue(characterId, out player!))
+        {
+            player = new WorldPlayer(characterId, default, 0);
+            failure = EquipmentFailure.PlayerNotFound;
+            return false;
+        }
+
+        if (sequence <= player.LastProcessedSequence)
+        {
+            failure = EquipmentFailure.StaleSequence;
+            return false;
+        }
+
+        if (!player.IsAlive)
+        {
+            failure = EquipmentFailure.PlayerDead;
+            return false;
+        }
+
+        player = player with { LastProcessedSequence = sequence };
+        _players[characterId] = player;
+        failure = EquipmentFailure.None;
+        return true;
+    }
+
+    private EquipmentResult EquipmentFailureResult(EquipmentFailure failure, WorldPlayer player) =>
+        new(
+            failure,
+            player,
+            InventorySnapshot(player.CharacterId),
+            EquipmentSnapshot(player.CharacterId));
+
+    private WorldPlayer ApplyEquipmentStats(WorldPlayer player)
+    {
+        var basePlayer = CreatePlayer(player.CharacterId, player.Position, player.Archetype);
+        var definitions = EquipmentSnapshot(player.CharacterId)
+            .Select(item => EquipmentCatalog.TryGet(item.ItemId, out var definition) ? definition : null)
+            .Where(definition => definition is not null)
+            .Cast<EquipmentDefinition>()
+            .ToArray();
+        var maximumHealth = basePlayer.MaximumHealth + definitions.Sum(item => item.MaximumHealthBonus);
+        var health = maximumHealth > player.MaximumHealth
+            ? Math.Min(maximumHealth, player.Health + maximumHealth - player.MaximumHealth)
+            : Math.Min(maximumHealth, player.Health);
+        return player with
+        {
+            Health = health,
+            MaximumHealth = maximumHealth,
+            AttackPower = basePlayer.AttackPower + definitions.Sum(item => item.AttackBonus),
+            Defense = basePlayer.Defense + definitions.Sum(item => item.DefenseBonus)
+        };
+    }
 
     private WorldDrop CreateDrop(
         string itemId,

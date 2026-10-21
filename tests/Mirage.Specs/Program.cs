@@ -36,6 +36,8 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("死亡玩家会在固定帧复活", DeadPlayerRespawnsOnSchedule),
     ("无人拾取的地面物品会按固定帧过期", GroundDropExpires),
     ("四职业拥有不同的基础战斗属性", ArchetypesHaveDistinctCombatProfiles),
+    ("装备会从背包转移并增加权威属性", EquipmentMovesFromInventoryAndAddsStats),
+    ("装备与卸下指令都在世界帧执行", EquipmentCommandsExecuteOnWorldTick),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -501,6 +503,43 @@ static Task ArchetypesHaveDistinctCombatProfiles()
     Require(assassin.AttackCooldownTicks < warrior.AttackCooldownTicks, "刺客基础攻击间隔应更短");
     Require(warrior.Defense > mage.Defense, "战士基础防御应高于法师");
     return Task.CompletedTask;
+}
+
+static Task EquipmentMovesFromInventoryAndAddsStats()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(1, 1));
+    world.ReplaceInventory(characterId,
+        [new InventoryItem("wooden_sword", 1), new InventoryItem("cloth_armor", 1)]);
+    var basePlayer = world.FindPlayer(characterId)!;
+    var weapon = world.Equip(characterId, 1, "wooden_sword");
+    var armor = world.Equip(characterId, 2, "cloth_armor");
+
+    Require(weapon.IsSuccess && armor.IsSuccess, "背包内装备应可穿戴");
+    Require(armor.Player.AttackPower == basePlayer.AttackPower + 3, "武器应增加攻击");
+    Require(armor.Player.Defense == basePlayer.Defense + 2, "防具应增加防御");
+    Require(armor.Player.MaximumHealth == basePlayer.MaximumHealth + 10, "防具应增加最大生命");
+    Require(world.InventorySnapshot(characterId).Count == 0, "已穿戴物品应离开背包");
+    Require(world.EquipmentSnapshot(characterId).Count == 2, "装备槽应记录已穿戴物品");
+    return Task.CompletedTask;
+}
+
+static async Task EquipmentCommandsExecuteOnWorldTick()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(1, 1));
+    world.ReplaceInventory(characterId, [new InventoryItem("wooden_token", 1)]);
+    var simulation = new WorldSimulation(world);
+    var equip = simulation.QueueEquipAsync(characterId, 1, "wooden_token").AsTask();
+    Require(!equip.IsCompleted, "装备不应绕过世界帧");
+    simulation.Tick();
+    Require((await equip).IsSuccess, "世界帧应完成装备");
+    var unequip = simulation.QueueUnequipAsync(characterId, 2, EquipmentSlot.Accessory).AsTask();
+    simulation.Tick();
+    Require((await unequip).IsSuccess, "世界帧应完成卸下");
+    Require(world.InventorySnapshot(characterId).Single().ItemId == "wooden_token", "卸下物品应回到背包");
 }
 
 static async Task CharacterOwnershipIsEnforced()
