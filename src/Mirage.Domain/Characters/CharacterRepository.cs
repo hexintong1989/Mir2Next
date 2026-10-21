@@ -9,6 +9,11 @@ public enum AddCharacterOutcome
 
 public interface ICharacterWorldStateStore
 {
+    ValueTask<bool> CanEnterWorldAsync(
+        Guid accountId,
+        Guid characterId,
+        CancellationToken cancellationToken);
+
     ValueTask<CharacterWorldState?> LoadWorldStateAsync(
         Guid characterId,
         CancellationToken cancellationToken);
@@ -52,6 +57,20 @@ public sealed class InMemoryCharacterRepository : ICharacterRepository
     private readonly object _gate = new();
     private readonly Dictionary<string, GameCharacter> _charactersByName = new(StringComparer.Ordinal);
     private readonly Dictionary<Guid, List<GameCharacter>> _charactersByAccount = [];
+
+    public ValueTask<bool> CanEnterWorldAsync(
+        Guid accountId,
+        Guid characterId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            var allowed = _charactersByAccount.TryGetValue(accountId, out var characters)
+                && characters.Any(character => character.Id == characterId && !character.IsPendingDeletion);
+            return ValueTask.FromResult(allowed);
+        }
+    }
 
     public ValueTask<GameCharacter?> FindOwnedAsync(
         Guid accountId,
@@ -244,6 +263,15 @@ public sealed class InMemoryCharacterWorldStateStore : ICharacterWorldStateStore
 {
     private readonly object _gate = new();
     private readonly Dictionary<Guid, CharacterWorldState> _states = [];
+
+    public ValueTask<bool> CanEnterWorldAsync(
+        Guid accountId,
+        Guid characterId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(true);
+    }
 
     public ValueTask<CharacterWorldState?> LoadWorldStateAsync(
         Guid characterId,

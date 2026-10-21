@@ -22,6 +22,7 @@ public sealed class WorldSocketHub(
 
     public async Task AcceptAsync(
         HttpContext context,
+        Guid? accountId,
         Guid characterId,
         GridPosition spawn,
         CharacterArchetype archetype,
@@ -30,6 +31,13 @@ public sealed class WorldSocketHub(
         bool findAvailableSpawn,
         CancellationToken cancellationToken)
     {
+        if (accountId is { } ownerId
+            && !await worldStates.CanEnterWorldAsync(ownerId, characterId, cancellationToken))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return;
+        }
+
         var latest = await worldStates.LoadWorldStateAsync(characterId, cancellationToken);
         if (latest is not null && !string.Equals(latest.MapId, world.MapId, StringComparison.Ordinal))
         {

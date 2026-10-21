@@ -45,6 +45,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
+    ("待删除角色即使持有旧票据也不能进入世界", PendingDeletionBlocksWorldEntry),
     ("只有冷静期届满的角色会被清理", OnlyDueCharactersArePurged),
     ("角色世界状态可以持久化且拒绝旧写入", CharacterWorldStatePersistsLatestPosition),
     ("断线重进恢复生命法力并继续死亡倒计时", RestoredCombatResourcesAreAuthoritative),
@@ -687,6 +688,25 @@ static async Task CharacterDeletionCanBeCancelled()
 
     Require(cancelled.IsSuccess && !cancelled.Value!.IsPendingDeletion, "撤销后不应再处于待删除状态");
     Require(selected?.DeleteAfter is null, "撤销后删除时间应清空");
+}
+
+static async Task PendingDeletionBlocksWorldEntry()
+{
+    var repository = new InMemoryCharacterRepository();
+    var service = new CharacterService(repository, new TestClock(DateTimeOffset.UtcNow));
+    var accountId = Guid.NewGuid();
+    var character = await service.CreateAsync(accountId, "entry_guard", CharacterArchetype.Warrior);
+    var characterId = character.Value!.Id;
+    Require(await repository.CanEnterWorldAsync(accountId, characterId, CancellationToken.None),
+        "正常角色应允许进入世界");
+    Require(!await repository.CanEnterWorldAsync(Guid.NewGuid(), characterId, CancellationToken.None),
+        "票据账号必须仍拥有角色");
+    await service.RequestDeletionAsync(accountId, characterId, "entry_guard");
+    Require(!await repository.CanEnterWorldAsync(accountId, characterId, CancellationToken.None),
+        "签发票据后申请删除仍应阻止连接");
+    await service.CancelDeletionAsync(accountId, characterId);
+    Require(await repository.CanEnterWorldAsync(accountId, characterId, CancellationToken.None),
+        "撤销删除后允许重新进入");
 }
 
 static async Task OnlyDueCharactersArePurged()

@@ -10,6 +10,22 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
     ICharacterRepository,
     ICharacterInventoryStore
 {
+    public async ValueTask<bool> CanEnterWorldAsync(
+        Guid accountId,
+        Guid characterId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT deletion_requested_at IS NULL
+            FROM characters
+            WHERE account_id = $1 AND character_id = $2
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue(accountId);
+        command.Parameters.AddWithValue(characterId);
+        return await command.ExecuteScalarAsync(cancellationToken) is true;
+    }
+
     public async ValueTask<GameCharacter?> FindOwnedAsync(
         Guid accountId,
         Guid characterId,

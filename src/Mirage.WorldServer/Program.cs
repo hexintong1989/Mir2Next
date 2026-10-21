@@ -125,6 +125,7 @@ app.Map("/ws/v1/world", async context =>
     var hub = context.RequestServices.GetRequiredService<WorldSocketHub>();
     await hub.AcceptAsync(
         context,
+        validation.Claims!.AccountId,
         validation.Claims!.CharacterId,
         new GridPosition(validation.Claims.PositionX, validation.Claims.PositionY),
         validation.Claims.Archetype,
@@ -155,6 +156,7 @@ if (app.Environment.IsDevelopment())
         var hub = context.RequestServices.GetRequiredService<WorldSocketHub>();
         await hub.AcceptAsync(
             context,
+            null,
             characterId,
             new GridPosition(x, y),
             CharacterArchetype.Warrior,
