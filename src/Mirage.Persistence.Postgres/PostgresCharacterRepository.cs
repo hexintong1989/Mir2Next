@@ -159,6 +159,72 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) : I
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
+    public async ValueTask<IReadOnlyList<CharacterDeletionAudit>> PurgeDueDeletionsAsync(
+        DateTimeOffset now,
+        int maximumCount,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumCount, 1);
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var due = new List<CharacterDeletionAudit>();
+
+        await using (var select = connection.CreateCommand())
+        {
+            select.Transaction = transaction;
+            select.CommandText = """
+                SELECT character_id, account_id, name, deletion_requested_at
+                FROM characters
+                WHERE delete_after <= $1
+                ORDER BY delete_after, character_id
+                LIMIT $2
+                FOR UPDATE SKIP LOCKED
+                """;
+            select.Parameters.AddWithValue(now.UtcDateTime);
+            select.Parameters.AddWithValue(maximumCount);
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                due.Add(new CharacterDeletionAudit(
+                    reader.GetGuid(0),
+                    reader.GetGuid(1),
+                    reader.GetString(2),
+                    new DateTimeOffset(reader.GetDateTime(3), TimeSpan.Zero),
+                    now));
+            }
+        }
+
+        foreach (var audit in due)
+        {
+            await using var insertAudit = connection.CreateCommand();
+            insertAudit.Transaction = transaction;
+            insertAudit.CommandText = """
+                INSERT INTO character_deletion_audit (
+                    character_id, account_id, name, deletion_requested_at, deleted_at)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (character_id) DO NOTHING
+                """;
+            insertAudit.Parameters.AddWithValue(audit.CharacterId);
+            insertAudit.Parameters.AddWithValue(audit.AccountId);
+            insertAudit.Parameters.AddWithValue(audit.Name);
+            insertAudit.Parameters.AddWithValue(audit.RequestedAt.UtcDateTime);
+            insertAudit.Parameters.AddWithValue(audit.DeletedAt.UtcDateTime);
+            await insertAudit.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        if (due.Count > 0)
+        {
+            await using var delete = connection.CreateCommand();
+            delete.Transaction = transaction;
+            delete.CommandText = "DELETE FROM characters WHERE character_id = ANY($1)";
+            delete.Parameters.AddWithValue(due.Select(value => value.CharacterId).ToArray());
+            await delete.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return due;
+    }
+
     private static GameCharacter ReadCharacter(NpgsqlDataReader reader) =>
         new(
             reader.GetGuid(0),

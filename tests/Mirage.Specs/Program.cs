@@ -27,6 +27,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
+    ("只有冷静期届满的角色会被清理", OnlyDueCharactersArePurged),
     ("角色世界状态可以持久化且拒绝旧写入", CharacterWorldStatePersistsLatestPosition),
     ("世界票据可验证且篡改会失败", WorldTicketRejectsTampering),
     ("世界票据携带服务端权威出生点", WorldTicketCarriesAuthoritativeSpawn),
@@ -307,6 +308,30 @@ static async Task CharacterDeletionCanBeCancelled()
 
     Require(cancelled.IsSuccess && !cancelled.Value!.IsPendingDeletion, "撤销后不应再处于待删除状态");
     Require(selected?.DeleteAfter is null, "撤销后删除时间应清空");
+}
+
+static async Task OnlyDueCharactersArePurged()
+{
+    var now = new DateTimeOffset(2026, 10, 21, 0, 0, 0, TimeSpan.Zero);
+    var clock = new TestClock(now);
+    var repository = new InMemoryCharacterRepository();
+    var service = new CharacterService(repository, clock);
+    var accountId = Guid.NewGuid();
+    var due = await service.CreateAsync(accountId, "due_hero", CharacterArchetype.Warrior);
+    var waiting = await service.CreateAsync(accountId, "wait_hero", CharacterArchetype.Mage);
+    await service.RequestDeletionAsync(accountId, due.Value!.Id, "due_hero");
+    clock.UtcNow = now.AddHours(12);
+    await service.RequestDeletionAsync(accountId, waiting.Value!.Id, "wait_hero");
+
+    var audits = await repository.PurgeDueDeletionsAsync(
+        now.Add(CharacterService.DeletionDelay),
+        100,
+        CancellationToken.None);
+    var remaining = await service.ListAsync(accountId);
+
+    Require(audits.Count == 1 && audits[0].CharacterId == due.Value.Id, "只应清理已到期角色");
+    Require(audits[0].Name == "due_hero" && audits[0].DeletedAt == now.AddHours(24), "审计应保留名称和删除时间");
+    Require(remaining.Count == 1 && remaining[0].Id == waiting.Value.Id, "冷静期未满角色必须保留");
 }
 
 static async Task CharacterWorldStatePersistsLatestPosition()

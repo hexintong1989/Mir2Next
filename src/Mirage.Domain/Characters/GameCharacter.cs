@@ -29,6 +29,13 @@ public sealed record CharacterWorldState(
     int PositionY,
     DateTimeOffset SavedAt);
 
+public sealed record CharacterDeletionAudit(
+    Guid CharacterId,
+    Guid AccountId,
+    string Name,
+    DateTimeOffset RequestedAt,
+    DateTimeOffset DeletedAt);
+
 public static partial class CharacterPolicy
 {
     public const int MaximumCharactersPerAccount = 4;

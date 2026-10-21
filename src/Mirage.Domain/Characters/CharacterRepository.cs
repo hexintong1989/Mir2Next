@@ -36,6 +36,11 @@ public interface ICharacterRepository : ICharacterWorldStateStore
         DateTimeOffset? requestedAt,
         DateTimeOffset? deleteAfter,
         CancellationToken cancellationToken);
+
+    ValueTask<IReadOnlyList<CharacterDeletionAudit>> PurgeDueDeletionsAsync(
+        DateTimeOffset now,
+        int maximumCount,
+        CancellationToken cancellationToken);
 }
 
 public sealed class InMemoryCharacterRepository : ICharacterRepository
@@ -169,6 +174,45 @@ public sealed class InMemoryCharacterRepository : ICharacterRepository
             }
 
             return ValueTask.FromResult(false);
+        }
+    }
+
+    public ValueTask<IReadOnlyList<CharacterDeletionAudit>> PurgeDueDeletionsAsync(
+        DateTimeOffset now,
+        int maximumCount,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumCount, 1);
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            var due = _charactersByAccount.Values
+                .SelectMany(characters => characters)
+                .Where(character => character.DeleteAfter <= now)
+                .OrderBy(character => character.DeleteAfter)
+                .ThenBy(character => character.Id)
+                .Take(maximumCount)
+                .ToArray();
+            var audits = new List<CharacterDeletionAudit>(due.Length);
+            foreach (var character in due)
+            {
+                _charactersByName.Remove(character.NormalizedName);
+                var accountCharacters = _charactersByAccount[character.AccountId];
+                accountCharacters.RemoveAll(value => value.Id == character.Id);
+                if (accountCharacters.Count == 0)
+                {
+                    _charactersByAccount.Remove(character.AccountId);
+                }
+
+                audits.Add(new CharacterDeletionAudit(
+                    character.Id,
+                    character.AccountId,
+                    character.Name,
+                    character.DeletionRequestedAt!.Value,
+                    now));
+            }
+
+            return ValueTask.FromResult<IReadOnlyList<CharacterDeletionAudit>>(audits);
         }
     }
 }

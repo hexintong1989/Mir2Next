@@ -6,6 +6,7 @@ using Mirage.Domain.Common;
 using Mirage.Domain.Characters;
 using Mirage.Persistence.Postgres;
 using Mirage.Domain.World;
+using Mirage.AuthServer;
 using Mirage.Shared.Contracts;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,6 +17,7 @@ builder.Services.AddSingleton<IPasswordHasher, Pbkdf2PasswordHasher>();
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<AccountService>();
 builder.Services.AddSingleton<CharacterService>();
+builder.Services.AddHostedService<CharacterDeletionCleanupService>();
 
 var ticketProtector = CreateTicketProtector(builder.Configuration);
 if (ticketProtector is not null)
