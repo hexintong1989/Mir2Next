@@ -247,6 +247,20 @@ if (app.Environment.IsDevelopment())
             ToPositionResponse(result.Player)));
     });
 
+    app.MapPost("/internal/dev/players/{characterId:guid}/chat", async (
+        Guid characterId,
+        ChatRequest request,
+        WorldSimulation simulation,
+        CancellationToken cancellationToken) =>
+    {
+        var result = await simulation.QueueChatAsync(
+            characterId, request.Sequence, request.Text, cancellationToken);
+        return Results.Ok(new ChatResponse(
+            result.IsSuccess,
+            result.IsSuccess ? null : result.Failure.ToString(),
+            result.Text));
+    });
+
     app.MapPost("/internal/dev/players/{characterId:guid}/equip", async (
         Guid characterId,
         EquipItemRequest request,

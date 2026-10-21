@@ -10,6 +10,8 @@ public sealed record AttackRequest(long Sequence, Guid MonsterId);
 
 public sealed record CastSkillRequest(long Sequence, string? SkillId, Guid MonsterId);
 
+public sealed record ChatRequest(long Sequence, string? Text);
+
 public sealed record PickupRequest(long Sequence, Guid DropId);
 
 public sealed record EquipItemRequest(long Sequence, string? ItemId);
@@ -69,6 +71,8 @@ public sealed record SkillResponse(
     bool Defeated,
     MonsterResponse? Monster,
     PlayerPositionResponse Player);
+
+public sealed record ChatResponse(bool Accepted, string? Rejection, string? Text);
 
 public sealed record GroundDropResponse(
     Guid DropId,

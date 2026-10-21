@@ -264,6 +264,24 @@ public sealed class WorldSocketHub(
                 continue;
             }
 
+            if (string.Equals(message.Type, "chat", StringComparison.Ordinal))
+            {
+                var chat = await simulation.QueueChatAsync(
+                    connection.CharacterId, message.Sequence, message.Text, cancellationToken);
+                if (!chat.IsSuccess)
+                {
+                    await connection.SendAsync(new ServerEnvelope("chatRejected", new
+                    {
+                        sequence = message.Sequence,
+                        code = chat.Failure.ToString()
+                    }), cancellationToken);
+                    continue;
+                }
+
+                await BroadcastChatAsync(chat, message.Sequence, cancellationToken);
+                continue;
+            }
+
             if (string.Equals(message.Type, "pickup", StringComparison.Ordinal)
                 && message.DropId != Guid.Empty)
             {
@@ -431,6 +449,31 @@ public sealed class WorldSocketHub(
         }
     }
 
+    private async Task BroadcastChatAsync(
+        ChatResult chat,
+        long sequence,
+        CancellationToken cancellationToken)
+    {
+        var message = new ServerEnvelope("chatMessage", new
+        {
+            sequence,
+            characterId = chat.Player.CharacterId,
+            text = chat.Text,
+            sentAt = DateTimeOffset.UtcNow
+        });
+        foreach (var connection in _connections.Values)
+        {
+            var recipient = world.FindPlayer(connection.CharacterId);
+            if (recipient is null
+                || recipient.Position.ChebyshevDistanceTo(chat.Player.Position) > AoiRadius)
+            {
+                continue;
+            }
+
+            await connection.SendAsync(message, cancellationToken);
+        }
+    }
+
     private async Task BroadcastMonsterUpdateAsync(
         AttackResult attack,
         CancellationToken cancellationToken)
@@ -593,7 +636,8 @@ public sealed class WorldSocketHub(
         Guid DropId,
         string? ItemId,
         string? Slot,
-        string? SkillId);
+        string? SkillId,
+        string? Text);
     private sealed record ServerEnvelope(string Type, object Payload);
 
     private sealed class ClientConnection(Guid characterId, WebSocket socket)

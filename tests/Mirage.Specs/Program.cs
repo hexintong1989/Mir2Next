@@ -41,6 +41,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("装备随背包快照保存并在加载时重算属性", EquipmentPersistsWithInventorySnapshot),
     ("主动技能按职业距离法力冷却和序号结算", SkillValidatesAuthorityAndResources),
     ("技能进入世界帧并在固定帧恢复法力", SkillExecutesOnWorldTickAndManaRegenerates),
+    ("聊天在世界帧校验内容频率和序号", ChatValidatesContentRateAndSequence),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -621,6 +622,28 @@ static async Task SkillExecutesOnWorldTickAndManaRegenerates()
         "世界帧应结算技能伤害和法力");
     world.Advance(WorldInstance.ManaRegenerationIntervalTicks);
     Require(world.FindPlayer(warrior)!.Mana == 23, "固定帧应恢复一点法力");
+}
+
+static async Task ChatValidatesContentRateAndSequence()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var sender = Guid.NewGuid();
+    world.Join(sender, new GridPosition(1, 1));
+    var simulation = new WorldSimulation(world);
+    var pending = simulation.QueueChatAsync(sender, 1, "  你好，世界  ").AsTask();
+    Require(!pending.IsCompleted, "聊天应由世界帧处理");
+    simulation.Tick();
+    Require((await pending).Text == "你好，世界", "聊天内容应去除前后空白");
+    Require(world.Chat(sender, 2, "重复", 2).Failure == ChatFailure.Cooldown,
+        "聊天发送频率应受限");
+    Require(world.Chat(sender, 2, "重放", 21).Failure == ChatFailure.StaleSequence,
+        "失败消息的序号也不能重放");
+    Require(world.Chat(sender, 3, new string('字', 121), 21).Failure == ChatFailure.InvalidText,
+        "过长内容应被拒绝");
+    Require(world.Chat(sender, 4, "bad\nline", 21).Failure == ChatFailure.InvalidText,
+        "控制字符应被拒绝");
+    Require(world.Chat(sender, 5, "再次发言", 21).IsSuccess,
+        "冷却结束后可以继续发送合法消息");
 }
 
 static async Task CharacterOwnershipIsEnforced()

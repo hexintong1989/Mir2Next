@@ -46,6 +46,16 @@ public enum SkillFailure
     Cooldown
 }
 
+public enum ChatFailure
+{
+    None,
+    PlayerNotFound,
+    PlayerDead,
+    StaleSequence,
+    InvalidText,
+    Cooldown
+}
+
 public enum PickupFailure
 {
     None,
@@ -130,6 +140,11 @@ public readonly record struct SkillResult(
     public bool IsSuccess => Failure == SkillFailure.None;
 }
 
+public readonly record struct ChatResult(ChatFailure Failure, WorldPlayer Player, string? Text)
+{
+    public bool IsSuccess => Failure == ChatFailure.None;
+}
+
 public readonly record struct PickupResult(
     PickupFailure Failure,
     WorldPlayer Player,
@@ -154,6 +169,8 @@ public sealed class WorldInstance
     public const int PlayerRespawnTicks = 60;
     public const int PlayerRespawnProtectionTicks = 40;
     public const int ManaRegenerationIntervalTicks = 20;
+    public const int ChatCooldownTicks = 20;
+    public const int MaximumChatLength = 120;
     private readonly object _gate = new();
     private readonly Dictionary<Guid, WorldPlayer> _players = [];
     private readonly Dictionary<Guid, WorldMonster> _monsters = [];
@@ -162,6 +179,7 @@ public sealed class WorldInstance
     private readonly Dictionary<Guid, Dictionary<string, int>> _inventories = [];
     private readonly Dictionary<Guid, Dictionary<EquipmentSlot, string>> _equipment = [];
     private readonly Dictionary<(Guid CharacterId, string SkillId), long> _skillLastCastTicks = [];
+    private readonly Dictionary<Guid, long> _chatLastSentTicks = [];
     private readonly Dictionary<Guid, GridPosition> _playerSpawns = [];
     private readonly HashSet<GridPosition> _occupiedPositions = [];
     private long _nextDropSequence;
@@ -532,6 +550,47 @@ public sealed class WorldInstance
         }
     }
 
+    public ChatResult Chat(Guid characterId, long sequence, string? text, long currentTick)
+    {
+        lock (_gate)
+        {
+            if (!_players.TryGetValue(characterId, out var player))
+            {
+                return new ChatResult(ChatFailure.PlayerNotFound,
+                    new WorldPlayer(characterId, default, 0), null);
+            }
+
+            if (sequence <= player.LastProcessedSequence)
+            {
+                return new ChatResult(ChatFailure.StaleSequence, player, null);
+            }
+
+            if (!player.IsAlive)
+            {
+                return new ChatResult(ChatFailure.PlayerDead, player, null);
+            }
+
+            player = player with { LastProcessedSequence = sequence };
+            _players[characterId] = player;
+            var normalized = text?.Trim();
+            if (string.IsNullOrWhiteSpace(normalized)
+                || normalized.Length > MaximumChatLength
+                || normalized.Any(char.IsControl))
+            {
+                return new ChatResult(ChatFailure.InvalidText, player, null);
+            }
+
+            if (_chatLastSentTicks.TryGetValue(characterId, out var lastSentTick)
+                && currentTick - lastSentTick < ChatCooldownTicks)
+            {
+                return new ChatResult(ChatFailure.Cooldown, player, null);
+            }
+
+            _chatLastSentTicks[characterId] = currentTick;
+            return new ChatResult(ChatFailure.None, player, normalized);
+        }
+    }
+
     public PickupResult Pickup(
         Guid characterId,
         long sequence,
@@ -611,6 +670,7 @@ public sealed class WorldInstance
 
             _occupiedPositions.Remove(player.Position);
             _playerSpawns.Remove(characterId);
+            _chatLastSentTicks.Remove(characterId);
             foreach (var key in _skillLastCastTicks.Keys.Where(key => key.CharacterId == characterId).ToArray())
             {
                 _skillLastCastTicks.Remove(key);
