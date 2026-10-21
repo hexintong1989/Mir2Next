@@ -24,6 +24,7 @@ public sealed class WorldSocketHub(
         HttpContext context,
         Guid characterId,
         GridPosition spawn,
+        CharacterArchetype archetype,
         bool findAvailableSpawn,
         CancellationToken cancellationToken)
     {
@@ -39,7 +40,7 @@ public sealed class WorldSocketHub(
         }
 
         var join = findAvailableSpawn
-            ? world.JoinAtAvailablePosition(characterId, spawn)
+            ? world.JoinAtAvailablePosition(characterId, spawn, archetype)
             : world.Join(characterId, spawn);
         if (!join.IsSuccess && join.Failure != JoinFailure.AlreadyJoined)
         {
@@ -433,7 +434,11 @@ public sealed class WorldSocketHub(
             player.Health,
             player.MaximumHealth,
             player.IsAlive,
-            player.InvulnerableUntilTick);
+            player.InvulnerableUntilTick,
+            player.Archetype,
+            player.AttackPower,
+            player.Defense,
+            player.AttackCooldownTicks);
 
     private static MonsterResponse ToMonsterResponse(WorldMonster monster) =>
         new(

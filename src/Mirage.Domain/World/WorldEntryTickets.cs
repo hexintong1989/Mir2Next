@@ -2,12 +2,14 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Mirage.Shared.Contracts;
 
 namespace Mirage.Domain.World;
 
 public sealed record WorldEntryTicketClaims(
     Guid AccountId,
     Guid CharacterId,
+    CharacterArchetype Archetype,
     string RealmId,
     string MapId,
     int PositionX,
@@ -60,13 +62,15 @@ public sealed class HmacWorldEntryTicketProtector
         DateTimeOffset now,
         string mapId = "local-field",
         int positionX = 64,
-        int positionY = 64)
+        int positionY = 64,
+        CharacterArchetype archetype = CharacterArchetype.Warrior)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(realmId);
         ArgumentException.ThrowIfNullOrWhiteSpace(mapId);
         var claims = new WorldEntryTicketClaims(
             accountId,
             characterId,
+            archetype,
             realmId,
             mapId,
             positionX,
@@ -114,7 +118,8 @@ public sealed class HmacWorldEntryTicketProtector
 
         if (claims is null
             || string.IsNullOrWhiteSpace(claims.Nonce)
-            || string.IsNullOrWhiteSpace(claims.MapId))
+            || string.IsNullOrWhiteSpace(claims.MapId)
+            || !Enum.IsDefined(claims.Archetype))
         {
             return Failure(TicketValidationFailure.Malformed);
         }

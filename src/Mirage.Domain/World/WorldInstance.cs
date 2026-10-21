@@ -1,3 +1,5 @@
+using Mirage.Shared.Contracts;
+
 namespace Mirage.Domain.World;
 
 public enum JoinFailure
@@ -50,7 +52,11 @@ public sealed record WorldPlayer(
     int Health = 100,
     int MaximumHealth = 100,
     long? RespawnAtTick = null,
-    long InvulnerableUntilTick = 0)
+    long InvulnerableUntilTick = 0,
+    CharacterArchetype Archetype = CharacterArchetype.Warrior,
+    int AttackPower = 12,
+    int Defense = 3,
+    int AttackCooldownTicks = 10)
 {
     public bool IsAlive => Health > 0;
 }
@@ -115,7 +121,7 @@ public sealed class WorldInstance
     public const int DropOwnerProtectionTicks = 200;
     public const int DropLifetimeTicks = 1200;
     public const int InventorySlotLimit = 20;
-    public const int MonsterAttackDamage = 5;
+    public const int MonsterAttackDamage = 8;
     public const int MonsterAttackCooldownTicks = 20;
     public const int PlayerRespawnTicks = 60;
     public const int PlayerRespawnProtectionTicks = 40;
@@ -232,7 +238,7 @@ public sealed class WorldInstance
                 return new JoinResult(JoinFailure.Occupied, null);
             }
 
-            var player = new WorldPlayer(characterId, spawn, 0);
+            var player = CreatePlayer(characterId, spawn, CharacterArchetype.Warrior);
             _players.Add(characterId, player);
             _playerSpawns[characterId] = spawn;
             _inventories.TryAdd(characterId, new Dictionary<string, int>(StringComparer.Ordinal));
@@ -241,7 +247,10 @@ public sealed class WorldInstance
         }
     }
 
-    public JoinResult JoinAtAvailablePosition(Guid characterId, GridPosition preferredSpawn)
+    public JoinResult JoinAtAvailablePosition(
+        Guid characterId,
+        GridPosition preferredSpawn,
+        CharacterArchetype archetype = CharacterArchetype.Warrior)
     {
         lock (_gate)
         {
@@ -259,7 +268,7 @@ public sealed class WorldInstance
                     continue;
                 }
 
-                var player = new WorldPlayer(characterId, candidate, 0);
+                var player = CreatePlayer(characterId, candidate, archetype);
                 _players.Add(characterId, player);
                 _playerSpawns[characterId] = candidate;
                 _inventories.TryAdd(characterId, new Dictionary<string, int>(StringComparer.Ordinal));
@@ -359,14 +368,14 @@ public sealed class WorldInstance
                 return new AttackResult(AttackFailure.OutOfRange, player, monster, 0, false, null);
             }
 
-            if (currentTick - player.LastAttackTick < BasicAttackCooldownTicks)
+            if (currentTick - player.LastAttackTick < player.AttackCooldownTicks)
             {
                 return new AttackResult(AttackFailure.Cooldown, player, monster, 0, false, null);
             }
 
             player = player with { LastAttackTick = currentTick };
             _players[characterId] = player;
-            var damage = Math.Min(BasicAttackDamage, monster.Health);
+            var damage = Math.Min(player.AttackPower, monster.Health);
             var health = monster.Health - damage;
             monster = monster with { Health = health };
             var defeated = health == 0;
@@ -659,7 +668,8 @@ public sealed class WorldInstance
 
                     var attackingMonster = monster with { LastAttackTick = currentTick };
                     _monsters[monster.MonsterId] = attackingMonster;
-                    var health = Math.Max(0, target.Player.Health - MonsterAttackDamage);
+                    var receivedDamage = Math.Max(1, MonsterAttackDamage - target.Player.Defense);
+                    var health = Math.Max(0, target.Player.Health - receivedDamage);
                     var damagedPlayer = target.Player with
                     {
                         Health = health,
@@ -737,6 +747,26 @@ public sealed class WorldInstance
 
     private bool Contains(GridPosition position) =>
         position.X >= 0 && position.X < Width && position.Y >= 0 && position.Y < Height;
+
+    private static WorldPlayer CreatePlayer(
+        Guid characterId,
+        GridPosition position,
+        CharacterArchetype archetype) => archetype switch
+    {
+        CharacterArchetype.Warrior => new WorldPlayer(
+            characterId, position, 0, MaximumHealth: 120, Health: 120,
+            Archetype: archetype, AttackPower: 12, Defense: 3, AttackCooldownTicks: 10),
+        CharacterArchetype.Mage => new WorldPlayer(
+            characterId, position, 0, MaximumHealth: 80, Health: 80,
+            Archetype: archetype, AttackPower: 14, Defense: 1, AttackCooldownTicks: 12),
+        CharacterArchetype.Taoist => new WorldPlayer(
+            characterId, position, 0, MaximumHealth: 95, Health: 95,
+            Archetype: archetype, AttackPower: 10, Defense: 2, AttackCooldownTicks: 11),
+        CharacterArchetype.Assassin => new WorldPlayer(
+            characterId, position, 0, MaximumHealth: 90, Health: 90,
+            Archetype: archetype, AttackPower: 13, Defense: 1, AttackCooldownTicks: 8),
+        _ => throw new ArgumentOutOfRangeException(nameof(archetype))
+    };
 
     private WorldDrop CreateDrop(
         string itemId,

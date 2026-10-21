@@ -26,7 +26,11 @@ public sealed record PlayerPositionResponse(
     int Health,
     int MaximumHealth,
     bool IsAlive,
-    long InvulnerableUntilTick);
+    long InvulnerableUntilTick,
+    CharacterArchetype Archetype,
+    int AttackPower,
+    int Defense,
+    int AttackCooldownTicks);
 
 public sealed record MoveResponse(
     bool Accepted,

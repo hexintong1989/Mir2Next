@@ -35,6 +35,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("怪物会攻击相邻玩家并造成死亡", MonsterAttacksAndKillsAdjacentPlayer),
     ("死亡玩家会在固定帧复活", DeadPlayerRespawnsOnSchedule),
     ("无人拾取的地面物品会按固定帧过期", GroundDropExpires),
+    ("四职业拥有不同的基础战斗属性", ArchetypesHaveDistinctCombatProfiles),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -431,14 +432,14 @@ static Task MonsterAttacksAndKillsAdjacentPlayer()
     world.SpawnMonster(Guid.NewGuid(), "wolf", new GridPosition(2, 1), 1, 20);
 
     for (var tick = WorldInstance.MonsterBehaviorIntervalTicks;
-         tick <= 20 * WorldInstance.MonsterBehaviorIntervalTicks;
+         tick <= 24 * WorldInstance.MonsterBehaviorIntervalTicks;
          tick += WorldInstance.MonsterBehaviorIntervalTicks)
     {
         world.Advance(tick);
     }
 
     var dead = world.FindPlayer(characterId)!;
-    Require(!dead.IsAlive && dead.RespawnAtTick == 460, "连续怪物攻击应使玩家死亡并安排复活");
+    Require(!dead.IsAlive && dead.RespawnAtTick == 540, "连续怪物攻击应使玩家死亡并安排复活");
     Require(world.Move(characterId, 1, new GridPosition(1, 2)).Failure == MoveFailure.PlayerDead, "死亡玩家不能移动");
     return Task.CompletedTask;
 }
@@ -449,13 +450,13 @@ static Task DeadPlayerRespawnsOnSchedule()
     var characterId = Guid.NewGuid();
     world.Join(characterId, new GridPosition(1, 1));
     world.SpawnMonster(Guid.NewGuid(), "wolf", new GridPosition(2, 1), 1, 20);
-    for (var tick = 20; tick <= 400; tick += 20)
+    for (var tick = 20; tick <= 480; tick += 20)
     {
         world.Advance(tick);
     }
 
-    Require(world.Advance(459) == 0, "复活帧之前应保持死亡");
-    Require(world.Advance(460) == 1, "到达复活帧应恢复玩家");
+    Require(world.Advance(539) == 0, "复活帧之前应保持死亡");
+    Require(world.Advance(540) == 1, "到达复活帧应恢复玩家");
     var player = world.FindPlayer(characterId)!;
     Require(player.IsAlive && player.Health == player.MaximumHealth, "复活后应恢复满血");
     Require(player.Position == new GridPosition(1, 1), "复活后应回到进入世界的位置");
@@ -479,6 +480,26 @@ static Task GroundDropExpires()
         world.Pickup(characterId, 2, attack.Drop.DropId, attack.Drop.ExpiresAtTick).Failure
             == PickupFailure.DropNotFound,
         "过期掉落不能拾取");
+    return Task.CompletedTask;
+}
+
+static Task ArchetypesHaveDistinctCombatProfiles()
+{
+    var world = new WorldInstance("test", 20, 20);
+    var warriorId = Guid.NewGuid();
+    var mageId = Guid.NewGuid();
+    var assassinId = Guid.NewGuid();
+    world.JoinAtAvailablePosition(warriorId, new GridPosition(1, 1), CharacterArchetype.Warrior);
+    world.JoinAtAvailablePosition(mageId, new GridPosition(3, 1), CharacterArchetype.Mage);
+    world.JoinAtAvailablePosition(assassinId, new GridPosition(5, 1), CharacterArchetype.Assassin);
+    var warrior = world.FindPlayer(warriorId)!;
+    var mage = world.FindPlayer(mageId)!;
+    var assassin = world.FindPlayer(assassinId)!;
+
+    Require(warrior.MaximumHealth > mage.MaximumHealth, "战士基础生命应高于法师");
+    Require(mage.AttackPower > warrior.AttackPower, "法师基础攻击应高于战士");
+    Require(assassin.AttackCooldownTicks < warrior.AttackCooldownTicks, "刺客基础攻击间隔应更短");
+    Require(warrior.Defense > mage.Defense, "战士基础防御应高于法师");
     return Task.CompletedTask;
 }
 
@@ -596,14 +617,16 @@ static Task WorldTicketCarriesAuthoritativeSpawn()
         now,
         "local-field",
         77,
-        78);
+        78,
+        CharacterArchetype.Assassin);
     var validation = CreateTicketProtector().Validate(ticket.Token, "local", now);
     Require(validation.IsSuccess, "带出生状态的票据应验证成功");
     Require(
         validation.Claims?.MapId == "local-field"
         && validation.Claims.PositionX == 77
-        && validation.Claims.PositionY == 78,
-        "票据应携带服务端保存的地图与坐标");
+        && validation.Claims.PositionY == 78
+        && validation.Claims.Archetype == CharacterArchetype.Assassin,
+        "票据应携带服务端保存的地图、坐标与职业");
     return Task.CompletedTask;
 }
 

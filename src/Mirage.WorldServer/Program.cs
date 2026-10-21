@@ -125,6 +125,7 @@ app.Map("/ws/v1/world", async context =>
         context,
         validation.Claims!.CharacterId,
         new GridPosition(validation.Claims.PositionX, validation.Claims.PositionY),
+        validation.Claims.Archetype,
         true,
         context.RequestAborted);
 });
@@ -152,6 +153,7 @@ if (app.Environment.IsDevelopment())
             context,
             characterId,
             new GridPosition(x, y),
+            CharacterArchetype.Warrior,
             false,
             context.RequestAborted);
     });
@@ -284,7 +286,11 @@ static PlayerPositionResponse ToPositionResponse(WorldPlayer player) =>
         player.Health,
         player.MaximumHealth,
         player.IsAlive,
-        player.InvulnerableUntilTick);
+        player.InvulnerableUntilTick,
+        player.Archetype,
+        player.AttackPower,
+        player.Defense,
+        player.AttackCooldownTicks);
 
 static MonsterResponse ToMonsterResponse(WorldMonster monster) =>
     new(
