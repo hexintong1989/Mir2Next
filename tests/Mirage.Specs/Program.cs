@@ -32,6 +32,8 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("怪物死亡掉落具有击杀者保护期", MonsterDropHasOwnerProtection),
     ("拾取指令在世界帧结算并进入背包", PickupExecutesOnWorldTick),
     ("背包快照持久化拒绝旧版本覆盖", InventorySnapshotRejectsStaleSave),
+    ("怪物会攻击相邻玩家并造成死亡", MonsterAttacksAndKillsAdjacentPlayer),
+    ("死亡玩家会在固定帧复活", DeadPlayerRespawnsOnSchedule),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -418,6 +420,45 @@ static async Task InventorySnapshotRejectsStaleSave()
     Require(!await store.SaveAsync(stale, CancellationToken.None), "旧背包不能覆盖新版本");
     var loaded = await store.LoadAsync(characterId, CancellationToken.None);
     Require(loaded?.Items.Single().Quantity == 2, "应读回最新背包数量");
+}
+
+static Task MonsterAttacksAndKillsAdjacentPlayer()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(1, 1));
+    world.SpawnMonster(Guid.NewGuid(), "wolf", new GridPosition(2, 1), 1, 20);
+
+    for (var tick = WorldInstance.MonsterBehaviorIntervalTicks;
+         tick <= 20 * WorldInstance.MonsterBehaviorIntervalTicks;
+         tick += WorldInstance.MonsterBehaviorIntervalTicks)
+    {
+        world.Advance(tick);
+    }
+
+    var dead = world.FindPlayer(characterId)!;
+    Require(!dead.IsAlive && dead.RespawnAtTick == 460, "连续怪物攻击应使玩家死亡并安排复活");
+    Require(world.Move(characterId, 1, new GridPosition(1, 2)).Failure == MoveFailure.PlayerDead, "死亡玩家不能移动");
+    return Task.CompletedTask;
+}
+
+static Task DeadPlayerRespawnsOnSchedule()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(1, 1));
+    world.SpawnMonster(Guid.NewGuid(), "wolf", new GridPosition(2, 1), 1, 20);
+    for (var tick = 20; tick <= 400; tick += 20)
+    {
+        world.Advance(tick);
+    }
+
+    Require(world.Advance(459) == 0, "复活帧之前应保持死亡");
+    Require(world.Advance(460) == 1, "到达复活帧应恢复玩家");
+    var player = world.FindPlayer(characterId)!;
+    Require(player.IsAlive && player.Health == player.MaximumHealth, "复活后应恢复满血");
+    Require(player.Position == new GridPosition(1, 1), "复活后应回到进入世界的位置");
+    return Task.CompletedTask;
 }
 
 static async Task CharacterOwnershipIsEnforced()

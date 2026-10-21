@@ -280,7 +280,11 @@ static PlayerPositionResponse ToPositionResponse(WorldPlayer player) =>
         player.CharacterId,
         player.Position.X,
         player.Position.Y,
-        player.LastProcessedSequence);
+        player.LastProcessedSequence,
+        player.Health,
+        player.MaximumHealth,
+        player.IsAlive,
+        player.InvulnerableUntilTick);
 
 static MonsterResponse ToMonsterResponse(WorldMonster monster) =>
     new(

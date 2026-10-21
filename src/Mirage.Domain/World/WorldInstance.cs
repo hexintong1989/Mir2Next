@@ -15,7 +15,8 @@ public enum MoveFailure
     StaleSequence,
     OutOfBounds,
     InvalidStep,
-    Occupied
+    Occupied,
+    PlayerDead
 }
 
 public enum AttackFailure
@@ -25,7 +26,8 @@ public enum AttackFailure
     MonsterNotFound,
     StaleSequence,
     OutOfRange,
-    Cooldown
+    Cooldown,
+    PlayerDead
 }
 
 public enum PickupFailure
@@ -36,14 +38,22 @@ public enum PickupFailure
     StaleSequence,
     OutOfRange,
     Protected,
-    InventoryFull
+    InventoryFull,
+    PlayerDead
 }
 
 public sealed record WorldPlayer(
     Guid CharacterId,
     GridPosition Position,
     long LastProcessedSequence,
-    long LastAttackTick = -1000);
+    long LastAttackTick = -1000,
+    int Health = 100,
+    int MaximumHealth = 100,
+    long? RespawnAtTick = null,
+    long InvulnerableUntilTick = 0)
+{
+    public bool IsAlive => Health > 0;
+}
 
 public sealed record WorldMonster(
     Guid MonsterId,
@@ -51,7 +61,8 @@ public sealed record WorldMonster(
     GridPosition Position,
     int Level,
     int Health,
-    int MaximumHealth);
+    int MaximumHealth,
+    long LastAttackTick = -1000);
 
 public sealed record WorldDrop(
     Guid DropId,
@@ -102,12 +113,17 @@ public sealed class WorldInstance
     public const int MonsterAggroRadius = 8;
     public const int DropOwnerProtectionTicks = 200;
     public const int InventorySlotLimit = 20;
+    public const int MonsterAttackDamage = 5;
+    public const int MonsterAttackCooldownTicks = 20;
+    public const int PlayerRespawnTicks = 60;
+    public const int PlayerRespawnProtectionTicks = 40;
     private readonly object _gate = new();
     private readonly Dictionary<Guid, WorldPlayer> _players = [];
     private readonly Dictionary<Guid, WorldMonster> _monsters = [];
     private readonly Dictionary<Guid, MonsterSpawn> _monsterSpawns = [];
     private readonly Dictionary<Guid, WorldDrop> _groundDrops = [];
     private readonly Dictionary<Guid, Dictionary<string, int>> _inventories = [];
+    private readonly Dictionary<Guid, GridPosition> _playerSpawns = [];
     private readonly HashSet<GridPosition> _occupiedPositions = [];
     private long _nextDropSequence;
 
@@ -216,6 +232,7 @@ public sealed class WorldInstance
 
             var player = new WorldPlayer(characterId, spawn, 0);
             _players.Add(characterId, player);
+            _playerSpawns[characterId] = spawn;
             _inventories.TryAdd(characterId, new Dictionary<string, int>(StringComparer.Ordinal));
             _occupiedPositions.Add(spawn);
             return new JoinResult(JoinFailure.None, player);
@@ -242,6 +259,7 @@ public sealed class WorldInstance
 
                 var player = new WorldPlayer(characterId, candidate, 0);
                 _players.Add(characterId, player);
+                _playerSpawns[characterId] = candidate;
                 _inventories.TryAdd(characterId, new Dictionary<string, int>(StringComparer.Ordinal));
                 _occupiedPositions.Add(candidate);
                 return new JoinResult(JoinFailure.None, player);
@@ -265,6 +283,11 @@ public sealed class WorldInstance
             if (sequence <= player.LastProcessedSequence)
             {
                 return new MoveResult(MoveFailure.StaleSequence, player);
+            }
+
+            if (!player.IsAlive)
+            {
+                return new MoveResult(MoveFailure.PlayerDead, player);
             }
 
             player = player with { LastProcessedSequence = sequence };
@@ -315,6 +338,11 @@ public sealed class WorldInstance
             if (sequence <= player.LastProcessedSequence)
             {
                 return new AttackResult(AttackFailure.StaleSequence, player, null, 0, false, null);
+            }
+
+            if (!player.IsAlive)
+            {
+                return new AttackResult(AttackFailure.PlayerDead, player, null, 0, false, null);
             }
 
             player = player with { LastProcessedSequence = sequence };
@@ -392,6 +420,11 @@ public sealed class WorldInstance
                 return new PickupResult(PickupFailure.StaleSequence, player, null, null);
             }
 
+            if (!player.IsAlive)
+            {
+                return new PickupResult(PickupFailure.PlayerDead, player, null, null);
+            }
+
             player = player with { LastProcessedSequence = sequence };
             _players[characterId] = player;
             if (!_groundDrops.TryGetValue(dropId, out var drop))
@@ -437,6 +470,7 @@ public sealed class WorldInstance
             }
 
             _occupiedPositions.Remove(player.Position);
+            _playerSpawns.Remove(characterId);
             return true;
         }
     }
@@ -531,6 +565,28 @@ public sealed class WorldInstance
         lock (_gate)
         {
             var changes = 0;
+            foreach (var player in _players.Values
+                         .Where(value => value.RespawnAtTick <= currentTick)
+                         .OrderBy(value => value.CharacterId)
+                         .ToArray())
+            {
+                var spawn = _playerSpawns[player.CharacterId];
+                if (_occupiedPositions.Contains(spawn))
+                {
+                    continue;
+                }
+
+                _players[player.CharacterId] = player with
+                {
+                    Position = spawn,
+                    Health = player.MaximumHealth,
+                    RespawnAtTick = null,
+                    InvulnerableUntilTick = currentTick + PlayerRespawnProtectionTicks
+                };
+                _occupiedPositions.Add(spawn);
+                changes++;
+            }
+
             foreach (var spawn in _monsterSpawns.Values
                          .Where(value => value.RespawnAtTick <= currentTick)
                          .OrderBy(value => value.MonsterId)
@@ -561,17 +617,44 @@ public sealed class WorldInstance
             foreach (var monster in _monsters.Values.OrderBy(value => value.MonsterId).ToArray())
             {
                 var target = _players.Values
+                    .Where(player => player.IsAlive && player.InvulnerableUntilTick <= currentTick)
                     .Select(player => new
                     {
                         Player = player,
                         Distance = monster.Position.ChebyshevDistanceTo(player.Position)
                     })
-                    .Where(value => value.Distance is > 1 and <= MonsterAggroRadius)
+                    .Where(value => value.Distance <= MonsterAggroRadius)
                     .OrderBy(value => value.Distance)
                     .ThenBy(value => value.Player.CharacterId)
                     .FirstOrDefault();
                 if (target is null)
                 {
+                    continue;
+                }
+
+
+                if (target.Distance <= 1)
+                {
+                    if (currentTick - monster.LastAttackTick < MonsterAttackCooldownTicks)
+                    {
+                        continue;
+                    }
+
+                    var attackingMonster = monster with { LastAttackTick = currentTick };
+                    _monsters[monster.MonsterId] = attackingMonster;
+                    var health = Math.Max(0, target.Player.Health - MonsterAttackDamage);
+                    var damagedPlayer = target.Player with
+                    {
+                        Health = health,
+                        RespawnAtTick = health == 0 ? currentTick + PlayerRespawnTicks : null
+                    };
+                    _players[target.Player.CharacterId] = damagedPlayer;
+                    if (health == 0)
+                    {
+                        _occupiedPositions.Remove(target.Player.Position);
+                    }
+
+                    changes++;
                     continue;
                 }
 

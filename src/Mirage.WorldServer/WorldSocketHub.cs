@@ -271,6 +271,7 @@ public sealed class WorldSocketHub(
 
     public async Task BroadcastMonsterSnapshotsAsync(CancellationToken cancellationToken)
     {
+        await RefreshVisibilityAsync(null, cancellationToken);
         foreach (var connection in _connections.Values)
         {
             await SendMonsterSnapshotAsync(connection, cancellationToken);
@@ -428,7 +429,11 @@ public sealed class WorldSocketHub(
             player.CharacterId,
             player.Position.X,
             player.Position.Y,
-            player.LastProcessedSequence);
+            player.LastProcessedSequence,
+            player.Health,
+            player.MaximumHealth,
+            player.IsAlive,
+            player.InvulnerableUntilTick);
 
     private static MonsterResponse ToMonsterResponse(WorldMonster monster) =>
         new(

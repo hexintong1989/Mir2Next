@@ -22,7 +22,11 @@ public sealed record PlayerPositionResponse(
     Guid CharacterId,
     int X,
     int Y,
-    long LastProcessedSequence);
+    long LastProcessedSequence,
+    int Health,
+    int MaximumHealth,
+    bool IsAlive,
+    long InvulnerableUntilTick);
 
 public sealed record MoveResponse(
     bool Accepted,
