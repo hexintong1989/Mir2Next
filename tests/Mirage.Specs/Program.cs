@@ -43,6 +43,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("技能进入世界帧并在固定帧恢复法力", SkillExecutesOnWorldTickAndManaRegenerates),
     ("聊天在世界帧校验内容频率和序号", ChatValidatesContentRateAndSequence),
     ("消耗品扣除背包并恢复受上限约束的资源", ConsumablesRestoreResourcesWithoutDuplication),
+    ("物品与资源同版本保存且旧快照不可覆盖", CombinedCharacterStateIsVersioned),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -677,6 +678,34 @@ static async Task ConsumablesRestoreResourcesWithoutDuplication()
         "最后一件消耗品应移出背包");
     Require(world.UseItem(characterId, 4, "mana_herb").Failure == UseItemFailure.ItemNotFound,
         "不能重复使用已耗尽的物品");
+}
+
+static async Task CombinedCharacterStateIsVersioned()
+{
+    var store = new InMemoryCharacterStateStore();
+    var characterId = Guid.NewGuid();
+    var savedAt = new DateTimeOffset(2026, 10, 21, 6, 0, 0, TimeSpan.Zero);
+    var inventory = new CharacterInventorySnapshot(characterId,
+        [new InventoryItem("venison", 1)], savedAt);
+    var worldState = new CharacterWorldState(characterId, "test", 2, 3, savedAt, 90, 20);
+    Require(await store.SaveInventoryAndWorldStateAsync(inventory, worldState, CancellationToken.None),
+        "背包与资源应同时保存");
+    Require((await store.LoadAsync(characterId, CancellationToken.None))?.Items.Single().Quantity == 1
+        && (await store.LoadWorldStateAsync(characterId, CancellationToken.None))?.Health == 90,
+        "两个快照应同时可读");
+
+    var newerWorld = worldState with { SavedAt = savedAt.AddSeconds(2), Health = 80 };
+    await store.SaveWorldStateAsync(newerWorld, CancellationToken.None);
+    var inventoryUpdate = inventory with { SavedAt = savedAt.AddSeconds(1), Items = [] };
+    Require(await store.SaveInventoryAndWorldStateAsync(inventoryUpdate,
+        worldState with { SavedAt = inventoryUpdate.SavedAt, Health = 70 }, CancellationToken.None),
+        "较新的世界检查点不能阻止背包提交");
+    Require((await store.LoadAsync(characterId, CancellationToken.None))?.Items.Count == 0,
+        "消耗后的背包应保存");
+    Require((await store.LoadWorldStateAsync(characterId, CancellationToken.None))?.Health == 80,
+        "旧世界状态不能覆盖较新的检查点");
+    Require(!await store.SaveInventoryAndWorldStateAsync(inventory, worldState, CancellationToken.None),
+        "旧背包版本应整体拒绝");
 }
 
 static async Task CharacterOwnershipIsEnforced()

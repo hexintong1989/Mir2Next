@@ -12,6 +12,7 @@ public sealed class WorldSocketHub(
     WorldSimulation simulation,
     ICharacterWorldStateStore worldStates,
     ICharacterInventoryStore inventories,
+    ICharacterStateStore characterStates,
     ILogger<WorldSocketHub> logger)
 {
     private const int MaximumMessageBytes = 4096;
@@ -322,8 +323,7 @@ public sealed class WorldSocketHub(
                     continue;
                 }
 
-                await TryPersistInventoryAsync(connection.CharacterId, cancellationToken);
-                await TryPersistWorldStateAsync(use.Player, cancellationToken);
+                await TryPersistCombinedStateAsync(use.Player, cancellationToken);
                 await connection.SendAsync(new ServerEnvelope("itemUsed", new
                 {
                     sequence = message.Sequence,
@@ -584,6 +584,46 @@ public sealed class WorldSocketHub(
                 exception,
                 "Failed to persist world state for {CharacterId}.",
                 player.CharacterId);
+        }
+    }
+
+    private async Task TryPersistCombinedStateAsync(
+        WorldPlayer player,
+        CancellationToken cancellationToken)
+    {
+        var savedAt = DateTimeOffset.UtcNow;
+        try
+        {
+            var saved = await characterStates.SaveInventoryAndWorldStateAsync(
+                new CharacterInventorySnapshot(
+                    player.CharacterId,
+                    world.InventorySnapshot(player.CharacterId),
+                    savedAt,
+                    world.EquipmentSnapshot(player.CharacterId)),
+                new CharacterWorldState(
+                    player.CharacterId,
+                    world.MapId,
+                    player.Position.X,
+                    player.Position.Y,
+                    savedAt,
+                    player.Health,
+                    player.Mana),
+                cancellationToken);
+            if (!saved)
+            {
+                logger.LogWarning(
+                    "A newer inventory snapshot superseded item use for {CharacterId}.",
+                    player.CharacterId);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception,
+                "Failed to persist item use for {CharacterId}.", player.CharacterId);
         }
     }
 

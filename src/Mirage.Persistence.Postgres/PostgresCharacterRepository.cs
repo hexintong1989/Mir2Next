@@ -8,7 +8,7 @@ namespace Mirage.Persistence.Postgres;
 
 public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
     ICharacterRepository,
-    ICharacterInventoryStore
+    ICharacterStateStore
 {
     public async ValueTask<bool> CanEnterWorldAsync(
         Guid accountId,
@@ -329,6 +329,85 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        if (!await TryAdvanceInventoryVersionAsync(connection, transaction, snapshot, cancellationToken))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+
+        await ReplaceInventoryRowsAsync(connection, transaction, snapshot, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    public async ValueTask<bool> SaveInventoryAndWorldStateAsync(
+        CharacterInventorySnapshot inventory,
+        CharacterWorldState worldState,
+        CancellationToken cancellationToken)
+    {
+        if (inventory.CharacterId != worldState.CharacterId
+            || inventory.SavedAt != worldState.SavedAt)
+        {
+            throw new ArgumentException("Combined snapshots must share character and version.");
+        }
+
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using (var characterLock = connection.CreateCommand())
+        {
+            characterLock.Transaction = transaction;
+            characterLock.CommandText = "SELECT character_id FROM characters WHERE character_id = $1 FOR UPDATE";
+            characterLock.Parameters.AddWithValue(worldState.CharacterId);
+            if (await characterLock.ExecuteScalarAsync(cancellationToken) is null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return false;
+            }
+        }
+
+        if (!await TryAdvanceInventoryVersionAsync(connection, transaction, inventory, cancellationToken))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+
+        await using (var updateWorld = connection.CreateCommand())
+        {
+            updateWorld.Transaction = transaction;
+            updateWorld.CommandText = """
+                UPDATE characters
+                SET map_id = $2,
+                    position_x = $3,
+                    position_y = $4,
+                    world_state_saved_at = $5,
+                    health = COALESCE($6, health),
+                    mana = COALESCE($7, mana)
+                WHERE character_id = $1
+                  AND (world_state_saved_at IS NULL OR world_state_saved_at <= $5)
+                """;
+            updateWorld.Parameters.AddWithValue(worldState.CharacterId);
+            updateWorld.Parameters.AddWithValue(worldState.MapId);
+            updateWorld.Parameters.AddWithValue(worldState.PositionX);
+            updateWorld.Parameters.AddWithValue(worldState.PositionY);
+            updateWorld.Parameters.AddWithValue(worldState.SavedAt.UtcDateTime);
+            updateWorld.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer,
+                Value = (object?)worldState.Health ?? DBNull.Value });
+            updateWorld.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer,
+                Value = (object?)worldState.Mana ?? DBNull.Value });
+            await updateWorld.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await ReplaceInventoryRowsAsync(connection, transaction, inventory, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    private static async Task<bool> TryAdvanceInventoryVersionAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        CharacterInventorySnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
         await using var version = connection.CreateCommand();
         version.Transaction = transaction;
         version.CommandText = """
@@ -341,12 +420,15 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
             """;
         version.Parameters.AddWithValue(snapshot.CharacterId);
         version.Parameters.AddWithValue(snapshot.SavedAt.UtcDateTime);
-        if (await version.ExecuteScalarAsync(cancellationToken) is null)
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return false;
-        }
+        return await version.ExecuteScalarAsync(cancellationToken) is not null;
+    }
 
+    private static async Task ReplaceInventoryRowsAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        CharacterInventorySnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
         await using (var delete = connection.CreateCommand())
         {
             delete.Transaction = transaction;
@@ -391,8 +473,6 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
             await insertEquipment.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        await transaction.CommitAsync(cancellationToken);
-        return true;
     }
 
     private static GameCharacter ReadCharacter(NpgsqlDataReader reader) =>

@@ -38,8 +38,13 @@ builder.Services.AddSingleton<WorldEntryTicketReplayGuard>();
 var postgresConnectionString = builder.Configuration.GetConnectionString("Postgres");
 if (string.IsNullOrWhiteSpace(postgresConnectionString))
 {
-    builder.Services.AddSingleton<ICharacterWorldStateStore, InMemoryCharacterWorldStateStore>();
-    builder.Services.AddSingleton<ICharacterInventoryStore, InMemoryCharacterInventoryStore>();
+    builder.Services.AddSingleton<InMemoryCharacterStateStore>();
+    builder.Services.AddSingleton<ICharacterStateStore>(services =>
+        services.GetRequiredService<InMemoryCharacterStateStore>());
+    builder.Services.AddSingleton<ICharacterWorldStateStore>(services =>
+        services.GetRequiredService<InMemoryCharacterStateStore>());
+    builder.Services.AddSingleton<ICharacterInventoryStore>(services =>
+        services.GetRequiredService<InMemoryCharacterStateStore>());
 }
 else
 {
@@ -49,6 +54,8 @@ else
     builder.Services.AddSingleton<ICharacterWorldStateStore>(services =>
         services.GetRequiredService<PostgresCharacterRepository>());
     builder.Services.AddSingleton<ICharacterInventoryStore>(services =>
+        services.GetRequiredService<PostgresCharacterRepository>());
+    builder.Services.AddSingleton<ICharacterStateStore>(services =>
         services.GetRequiredService<PostgresCharacterRepository>());
 }
 
