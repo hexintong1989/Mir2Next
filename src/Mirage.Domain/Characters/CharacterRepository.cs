@@ -21,6 +21,34 @@ public interface ICharacterWorldStateStore
     ValueTask<bool> SaveWorldStateAsync(
         CharacterWorldState state,
         CancellationToken cancellationToken);
+
+    ValueTask<int> SaveWorldStatesAsync(
+        IReadOnlyList<CharacterWorldState> states,
+        CancellationToken cancellationToken);
+}
+
+public static class CharacterWorldStateBatch
+{
+    public static IReadOnlyList<CharacterWorldState> CollapseLatest(
+        IReadOnlyList<CharacterWorldState> states)
+    {
+        if (states.Count <= 1)
+        {
+            return states;
+        }
+
+        var latest = new Dictionary<Guid, CharacterWorldState>(states.Count);
+        foreach (var state in states)
+        {
+            if (!latest.TryGetValue(state.CharacterId, out var current)
+                || current.SavedAt <= state.SavedAt)
+            {
+                latest[state.CharacterId] = state;
+            }
+        }
+
+        return latest.Values.ToArray();
+    }
 }
 
 public interface ICharacterRepository : ICharacterWorldStateStore
@@ -202,6 +230,51 @@ public sealed class InMemoryCharacterRepository : ICharacterRepository
         }
     }
 
+    public ValueTask<int> SaveWorldStatesAsync(
+        IReadOnlyList<CharacterWorldState> states,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var batch = CharacterWorldStateBatch.CollapseLatest(states);
+        lock (_gate)
+        {
+            var savedCount = 0;
+            foreach (var state in batch)
+            {
+                foreach (var characters in _charactersByAccount.Values)
+                {
+                    var index = characters.FindIndex(character => character.Id == state.CharacterId);
+                    if (index < 0)
+                    {
+                        continue;
+                    }
+
+                    var current = characters[index];
+                    if (current.WorldStateSavedAt is not null && current.WorldStateSavedAt > state.SavedAt)
+                    {
+                        break;
+                    }
+
+                    var updated = current with
+                    {
+                        MapId = state.MapId,
+                        PositionX = state.PositionX,
+                        PositionY = state.PositionY,
+                        WorldStateSavedAt = state.SavedAt,
+                        Health = state.Health ?? current.Health,
+                        Mana = state.Mana ?? current.Mana
+                    };
+                    characters[index] = updated;
+                    _charactersByName[updated.NormalizedName] = updated;
+                    savedCount++;
+                    break;
+                }
+            }
+
+            return ValueTask.FromResult(savedCount);
+        }
+    }
+
     public ValueTask<CharacterWorldState?> LoadWorldStateAsync(
         Guid characterId,
         CancellationToken cancellationToken)
@@ -299,6 +372,31 @@ public sealed class InMemoryCharacterWorldStateStore : ICharacterWorldStateStore
 
             _states[state.CharacterId] = state;
             return ValueTask.FromResult(true);
+        }
+    }
+
+    public ValueTask<int> SaveWorldStatesAsync(
+        IReadOnlyList<CharacterWorldState> states,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var batch = CharacterWorldStateBatch.CollapseLatest(states);
+        lock (_gate)
+        {
+            var savedCount = 0;
+            foreach (var state in batch)
+            {
+                if (_states.TryGetValue(state.CharacterId, out var current)
+                    && current.SavedAt > state.SavedAt)
+                {
+                    continue;
+                }
+
+                _states[state.CharacterId] = state;
+                savedCount++;
+            }
+
+            return ValueTask.FromResult(savedCount);
         }
     }
 }

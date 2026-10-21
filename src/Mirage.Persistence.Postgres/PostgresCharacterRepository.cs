@@ -184,6 +184,70 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
+    public async ValueTask<int> SaveWorldStatesAsync(
+        IReadOnlyList<CharacterWorldState> states,
+        CancellationToken cancellationToken)
+    {
+        var batch = CharacterWorldStateBatch.CollapseLatest(states);
+        if (batch.Count == 0)
+        {
+            return 0;
+        }
+
+        const string sql = """
+            WITH incoming (
+                character_id, map_id, position_x, position_y, saved_at,
+                health, has_health, mana, has_mana) AS (
+                SELECT *
+                FROM unnest(
+                    $1::uuid[], $2::varchar[], $3::integer[], $4::integer[],
+                    $5::timestamptz[], $6::integer[], $7::boolean[],
+                    $8::integer[], $9::boolean[])
+            )
+            UPDATE characters AS c
+            SET map_id = incoming.map_id,
+                position_x = incoming.position_x,
+                position_y = incoming.position_y,
+                world_state_saved_at = incoming.saved_at,
+                health = CASE WHEN incoming.has_health THEN incoming.health ELSE c.health END,
+                mana = CASE WHEN incoming.has_mana THEN incoming.mana ELSE c.mana END
+            FROM incoming
+            WHERE c.character_id = incoming.character_id
+              AND (c.world_state_saved_at IS NULL
+                   OR c.world_state_saved_at <= incoming.saved_at)
+            """;
+
+        await using var command = dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue(
+            NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Uuid,
+            batch.Select(state => state.CharacterId).ToArray());
+        command.Parameters.AddWithValue(
+            NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Varchar,
+            batch.Select(state => state.MapId).ToArray());
+        command.Parameters.AddWithValue(
+            NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer,
+            batch.Select(state => state.PositionX).ToArray());
+        command.Parameters.AddWithValue(
+            NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer,
+            batch.Select(state => state.PositionY).ToArray());
+        command.Parameters.AddWithValue(
+            NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.TimestampTz,
+            batch.Select(state => state.SavedAt.UtcDateTime).ToArray());
+        command.Parameters.AddWithValue(
+            NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer,
+            batch.Select(state => state.Health ?? 0).ToArray());
+        command.Parameters.AddWithValue(
+            NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Boolean,
+            batch.Select(state => state.Health.HasValue).ToArray());
+        command.Parameters.AddWithValue(
+            NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Integer,
+            batch.Select(state => state.Mana ?? 0).ToArray());
+        command.Parameters.AddWithValue(
+            NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Boolean,
+            batch.Select(state => state.Mana.HasValue).ToArray());
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async ValueTask<CharacterWorldState?> LoadWorldStateAsync(
         Guid characterId,
         CancellationToken cancellationToken)

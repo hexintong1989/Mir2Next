@@ -52,6 +52,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("待删除角色即使持有旧票据也不能进入世界", PendingDeletionBlocksWorldEntry),
     ("只有冷静期届满的角色会被清理", OnlyDueCharactersArePurged),
     ("角色世界状态可以持久化且拒绝旧写入", CharacterWorldStatePersistsLatestPosition),
+    ("世界状态批量保存会合并重复角色并拒绝旧版本", WorldStateBatchPersistsLatestVersions),
     ("断线重进恢复生命法力并继续死亡倒计时", RestoredCombatResourcesAreAuthoritative),
     ("世界票据可验证且篡改会失败", WorldTicketRejectsTampering),
     ("世界票据携带服务端权威出生点", WorldTicketCarriesAuthoritativeSpawn),
@@ -888,6 +889,41 @@ static async Task CharacterWorldStatePersistsLatestPosition()
     Require(loaded.WorldStateSavedAt == savedAt, "应记录最近保存时间");
     Require(latestState?.PositionX == 70 && latestState.Health == 52 && latestState.Mana == 17,
         "世界服应能读取最新状态而非沿用旧票据快照");
+}
+
+static async Task WorldStateBatchPersistsLatestVersions()
+{
+    var store = new InMemoryCharacterWorldStateStore();
+    var firstId = Guid.NewGuid();
+    var secondId = Guid.NewGuid();
+    var savedAt = new DateTimeOffset(2026, 10, 21, 3, 0, 0, TimeSpan.Zero);
+    var savedCount = await store.SaveWorldStatesAsync(
+        [
+            new CharacterWorldState(firstId, "local-field", 10, 10, savedAt, 90, 20),
+            new CharacterWorldState(secondId, "local-field", 20, 20, savedAt, 70, 40),
+            new CharacterWorldState(firstId, "local-field", 11, 12, savedAt.AddSeconds(1), 80, 19)
+        ],
+        CancellationToken.None);
+
+    Require(savedCount == 2, "同一批中的重复角色应只写入最新状态");
+    var first = await store.LoadWorldStateAsync(firstId, CancellationToken.None);
+    Require(first?.PositionX == 11 && first.PositionY == 12 && first.Health == 80,
+        "批量保存应采用重复角色的最新版本");
+
+    var nextCount = await store.SaveWorldStatesAsync(
+        [
+            new CharacterWorldState(firstId, "local-field", 1, 1, savedAt, 1, 1),
+            new CharacterWorldState(secondId, "local-field", 21, 22, savedAt.AddSeconds(2), 60, 39)
+        ],
+        CancellationToken.None);
+    var second = await store.LoadWorldStateAsync(secondId, CancellationToken.None);
+    Require(nextCount == 1, "旧版本不应计入批量保存结果");
+    Require((await store.LoadWorldStateAsync(firstId, CancellationToken.None))?.PositionX == 11,
+        "旧版本不能覆盖已保存状态");
+    Require(second?.PositionX == 21 && second.PositionY == 22 && second.Mana == 39,
+        "批量保存应更新其他角色的新版本");
+    Require(await store.SaveWorldStatesAsync([], CancellationToken.None) == 0,
+        "空批次应安全返回零");
 }
 
 static Task RestoredCombatResourcesAreAuthoritative()

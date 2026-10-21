@@ -82,6 +82,21 @@ public sealed class InMemoryCharacterStateStore : ICharacterStateStore
         }
     }
 
+    public async ValueTask<int> SaveWorldStatesAsync(
+        IReadOnlyList<CharacterWorldState> states,
+        CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            return await _worldStates.SaveWorldStatesAsync(states, CancellationToken.None);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async ValueTask<bool> SaveInventoryAndWorldStateAsync(
         CharacterInventorySnapshot inventory,
         CharacterWorldState worldState,

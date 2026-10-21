@@ -16,28 +16,40 @@ public sealed class WorldCheckpointService(
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
             var savedAt = DateTimeOffset.UtcNow;
-            foreach (var player in world.Snapshot())
+            var states = world.Snapshot()
+                .Select(player => new CharacterWorldState(
+                    player.CharacterId,
+                    world.MapId,
+                    player.Position.X,
+                    player.Position.Y,
+                    savedAt,
+                    player.Health,
+                    player.Mana))
+                .ToArray();
+            if (states.Length == 0)
             {
-                try
+                continue;
+            }
+
+            try
+            {
+                var savedCount = await worldStates.SaveWorldStatesAsync(states, stoppingToken);
+                if (savedCount != states.Length)
                 {
-                    await worldStates.SaveWorldStateAsync(new CharacterWorldState(
-                        player.CharacterId,
-                        world.MapId,
-                        player.Position.X,
-                        player.Position.Y,
-                        savedAt,
-                        player.Health,
-                        player.Mana), stoppingToken);
+                    logger.LogWarning(
+                        "World checkpoint saved {SavedCount} of {RequestedCount} character states.",
+                        savedCount,
+                        states.Length);
                 }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception exception)
-                {
-                    logger.LogError(exception,
-                        "Failed to checkpoint world state for {CharacterId}.", player.CharacterId);
-                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception,
+                    "Failed to checkpoint {CharacterCount} world states.", states.Length);
             }
         }
     }
