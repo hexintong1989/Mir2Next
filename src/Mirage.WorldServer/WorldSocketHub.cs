@@ -63,7 +63,15 @@ public sealed class WorldSocketHub(
                 {
                     protocolVersion = 1,
                     mapId = world.MapId,
-                    player = ToPositionResponse(world.FindPlayer(characterId)!)
+                    player = ToPositionResponse(world.FindPlayer(characterId)!),
+                    skills = SkillCatalog.ForArchetype(world.FindPlayer(characterId)!.Archetype)
+                        .Select(skill => new
+                        {
+                            skillId = skill.SkillId,
+                            range = skill.Range,
+                            manaCost = skill.ManaCost,
+                            cooldownTicks = skill.CooldownTicks
+                        })
                 }), cancellationToken);
             await RefreshVisibilityAsync(null, cancellationToken);
             await SendMonsterSnapshotAsync(connection, cancellationToken);
@@ -212,6 +220,43 @@ public sealed class WorldSocketHub(
 
                 await BroadcastMonsterUpdateAsync(attack, cancellationToken);
                 if (attack.Drop is not null)
+                {
+                    await BroadcastDropSnapshotAsync(cancellationToken);
+                }
+                await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
+                continue;
+            }
+
+            if (string.Equals(message.Type, "castSkill", StringComparison.Ordinal)
+                && !string.IsNullOrWhiteSpace(message.SkillId)
+                && message.MonsterId != Guid.Empty)
+            {
+                var skill = await simulation.QueueCastSkillAsync(
+                    connection.CharacterId, message.Sequence, message.SkillId,
+                    message.MonsterId, cancellationToken);
+                if (!skill.IsSuccess)
+                {
+                    await connection.SendAsync(new ServerEnvelope("skillRejected", new
+                    {
+                        sequence = message.Sequence,
+                        skillId = message.SkillId,
+                        code = skill.Failure.ToString(),
+                        player = ToPositionResponse(skill.Player)
+                    }), cancellationToken);
+                    continue;
+                }
+
+                await connection.SendAsync(new ServerEnvelope("skillResult", new
+                {
+                    sequence = message.Sequence,
+                    skillId = skill.SkillId,
+                    damage = skill.Damage,
+                    defeated = skill.Defeated,
+                    player = ToPositionResponse(skill.Player)
+                }), cancellationToken);
+                await BroadcastMonsterUpdateAsync(new AttackResult(AttackFailure.None,
+                    skill.Player, skill.Monster, skill.Damage, skill.Defeated, skill.Drop), cancellationToken);
+                if (skill.Drop is not null)
                 {
                     await BroadcastDropSnapshotAsync(cancellationToken);
                 }
@@ -511,7 +556,9 @@ public sealed class WorldSocketHub(
             player.Archetype,
             player.AttackPower,
             player.Defense,
-            player.AttackCooldownTicks);
+            player.AttackCooldownTicks,
+            player.Mana,
+            player.MaximumMana);
 
     private static MonsterResponse ToMonsterResponse(WorldMonster monster) =>
         new(
@@ -545,7 +592,8 @@ public sealed class WorldSocketHub(
         Guid MonsterId,
         Guid DropId,
         string? ItemId,
-        string? Slot);
+        string? Slot,
+        string? SkillId);
     private sealed record ServerEnvelope(string Type, object Payload);
 
     private sealed class ClientConnection(Guid characterId, WebSocket socket)

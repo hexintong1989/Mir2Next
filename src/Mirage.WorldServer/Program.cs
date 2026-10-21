@@ -224,6 +224,29 @@ if (app.Environment.IsDevelopment())
                 : new InventoryItemResponse(result.InventoryItem.ItemId, result.InventoryItem.Quantity)));
     });
 
+    app.MapPost("/internal/dev/players/{characterId:guid}/cast-skill", async (
+        Guid characterId,
+        CastSkillRequest request,
+        WorldSimulation simulation,
+        CancellationToken cancellationToken) =>
+    {
+        if (string.IsNullOrWhiteSpace(request.SkillId) || request.MonsterId == Guid.Empty)
+        {
+            return Results.BadRequest(new { code = "InvalidSkillTarget" });
+        }
+
+        var result = await simulation.QueueCastSkillAsync(
+            characterId, request.Sequence, request.SkillId, request.MonsterId, cancellationToken);
+        return Results.Ok(new SkillResponse(
+            result.IsSuccess,
+            result.IsSuccess ? null : result.Failure.ToString(),
+            result.SkillId,
+            result.Damage,
+            result.Defeated,
+            result.Monster is null ? null : ToMonsterResponse(result.Monster),
+            ToPositionResponse(result.Player)));
+    });
+
     app.MapPost("/internal/dev/players/{characterId:guid}/equip", async (
         Guid characterId,
         EquipItemRequest request,
@@ -335,7 +358,9 @@ static PlayerPositionResponse ToPositionResponse(WorldPlayer player) =>
         player.Archetype,
         player.AttackPower,
         player.Defense,
-        player.AttackCooldownTicks);
+        player.AttackCooldownTicks,
+        player.Mana,
+        player.MaximumMana);
 
 static MonsterResponse ToMonsterResponse(WorldMonster monster) =>
     new(

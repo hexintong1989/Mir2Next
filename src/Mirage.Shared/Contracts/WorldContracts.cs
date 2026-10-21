@@ -8,6 +8,8 @@ public sealed record MoveRequest(long Sequence, int X, int Y);
 
 public sealed record AttackRequest(long Sequence, Guid MonsterId);
 
+public sealed record CastSkillRequest(long Sequence, string? SkillId, Guid MonsterId);
+
 public sealed record PickupRequest(long Sequence, Guid DropId);
 
 public sealed record EquipItemRequest(long Sequence, string? ItemId);
@@ -34,7 +36,9 @@ public sealed record PlayerPositionResponse(
     CharacterArchetype Archetype,
     int AttackPower,
     int Defense,
-    int AttackCooldownTicks);
+    int AttackCooldownTicks,
+    int Mana,
+    int MaximumMana);
 
 public sealed record MoveResponse(
     bool Accepted,
@@ -56,6 +60,15 @@ public sealed record AttackResponse(
     int Damage,
     bool Defeated,
     MonsterResponse? Monster);
+
+public sealed record SkillResponse(
+    bool Accepted,
+    string? Rejection,
+    string SkillId,
+    int Damage,
+    bool Defeated,
+    MonsterResponse? Monster,
+    PlayerPositionResponse Player);
 
 public sealed record GroundDropResponse(
     Guid DropId,

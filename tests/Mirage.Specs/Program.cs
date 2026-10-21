@@ -39,6 +39,8 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("装备会从背包转移并增加权威属性", EquipmentMovesFromInventoryAndAddsStats),
     ("装备与卸下指令都在世界帧执行", EquipmentCommandsExecuteOnWorldTick),
     ("装备随背包快照保存并在加载时重算属性", EquipmentPersistsWithInventorySnapshot),
+    ("主动技能按职业距离法力冷却和序号结算", SkillValidatesAuthorityAndResources),
+    ("技能进入世界帧并在固定帧恢复法力", SkillExecutesOnWorldTickAndManaRegenerates),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -563,6 +565,62 @@ static async Task EquipmentPersistsWithInventorySnapshot()
 
     Require(world.EquipmentSnapshot(characterId).Single().ItemId == "wooden_sword", "应恢复武器槽");
     Require(world.FindPlayer(characterId)!.AttackPower == 15, "加载装备后应重算攻击属性");
+}
+
+static Task SkillValidatesAuthorityAndResources()
+{
+    var world = new WorldInstance("test", 20, 20);
+    var mage = Guid.NewGuid();
+    var target = Guid.NewGuid();
+    var distant = Guid.NewGuid();
+    world.JoinAtAvailablePosition(mage, new GridPosition(1, 1), CharacterArchetype.Mage);
+    world.SpawnMonster(target, "dummy", new GridPosition(5, 1), 1, 200);
+    world.SpawnMonster(distant, "dummy", new GridPosition(15, 15), 1, 200);
+
+    Require(world.CastSkill(mage, 1, "missing", target, 1).Failure == SkillFailure.UnknownSkill,
+        "未知技能不能施放");
+    Require(world.CastSkill(mage, 2, "power_strike", target, 1).Failure == SkillFailure.WrongArchetype,
+        "不能使用其他职业技能");
+    Require(world.CastSkill(mage, 3, "fireball", distant, 1).Failure == SkillFailure.OutOfRange,
+        "超出技能距离不能施放");
+    var first = world.CastSkill(mage, 4, "fireball", target, 1);
+    Require(first.IsSuccess && first.Damage == 24 && first.Player.Mana == 48,
+        "法师火球应由服务端结算伤害并消耗法力");
+    Require(world.CastSkill(mage, 5, "fireball", target, 2).Failure == SkillFailure.Cooldown,
+        "技能冷却期间不能再次施放");
+    Require(world.CastSkill(mage, 4, "fireball", target, 25).Failure == SkillFailure.StaleSequence,
+        "旧消息序号不能重放施法");
+    Require(world.CastSkill(mage, 6, "fireball", target, 25).IsSuccess,
+        "冷却结束后可以再次施放");
+    Require(world.CastSkill(mage, 7, "fireball", target, 49).IsSuccess,
+        "第三次施法应成功");
+    Require(world.CastSkill(mage, 8, "fireball", target, 73).IsSuccess,
+        "第四次施法应成功");
+    Require(world.CastSkill(mage, 9, "fireball", target, 97).IsSuccess,
+        "第五次施法应成功");
+    Require(world.CastSkill(mage, 10, "fireball", target, 121).Failure == SkillFailure.InsufficientMana,
+        "法力不足不能施放");
+    Require(world.FindPlayer(mage)!.Mana == 0, "失败施法不得扣除更多法力");
+    return Task.CompletedTask;
+}
+
+static async Task SkillExecutesOnWorldTickAndManaRegenerates()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var warrior = Guid.NewGuid();
+    var monster = Guid.NewGuid();
+    world.Join(warrior, new GridPosition(1, 1));
+    world.SpawnMonster(monster, "dummy", new GridPosition(2, 1), 1, 100);
+    var simulation = new WorldSimulation(world);
+    var pending = simulation.QueueCastSkillAsync(warrior, 1, "power_strike", monster).AsTask();
+    Require(!pending.IsCompleted && world.MonsterSnapshot().Single().Health == 100,
+        "施法必须等待世界帧结算");
+    simulation.Tick();
+    var result = await pending;
+    Require(result.IsSuccess && result.Damage == 20 && result.Player.Mana == 22,
+        "世界帧应结算技能伤害和法力");
+    world.Advance(WorldInstance.ManaRegenerationIntervalTicks);
+    Require(world.FindPlayer(warrior)!.Mana == 23, "固定帧应恢复一点法力");
 }
 
 static async Task CharacterOwnershipIsEnforced()

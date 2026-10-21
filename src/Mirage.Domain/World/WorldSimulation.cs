@@ -49,6 +49,21 @@ public sealed class WorldSimulation
         return await completion.Task.WaitAsync(cancellationToken);
     }
 
+    public async ValueTask<SkillResult> QueueCastSkillAsync(
+        Guid characterId,
+        long sequence,
+        string skillId,
+        Guid monsterId,
+        CancellationToken cancellationToken = default)
+    {
+        var completion = new TaskCompletionSource<SkillResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var command = new SkillCommand(characterId, sequence, skillId, monsterId,
+            completion, cancellationToken);
+        await _commands.Writer.WriteAsync(command, cancellationToken);
+        return await completion.Task.WaitAsync(cancellationToken);
+    }
+
     public async ValueTask<PickupResult> QueuePickupAsync(
         Guid characterId,
         long sequence,
@@ -140,6 +155,20 @@ public sealed class WorldSimulation
     {
         public void Execute(WorldInstance world, long currentTick) =>
             Completion.TrySetResult(world.Attack(CharacterId, Sequence, MonsterId, currentTick));
+
+        public void Cancel() => Completion.TrySetCanceled(CancellationToken);
+    }
+
+    private sealed record SkillCommand(
+        Guid CharacterId,
+        long Sequence,
+        string SkillId,
+        Guid MonsterId,
+        TaskCompletionSource<SkillResult> Completion,
+        CancellationToken CancellationToken) : IWorldCommand
+    {
+        public void Execute(WorldInstance world, long currentTick) =>
+            Completion.TrySetResult(world.CastSkill(CharacterId, Sequence, SkillId, MonsterId, currentTick));
 
         public void Cancel() => Completion.TrySetCanceled(CancellationToken);
     }

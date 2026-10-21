@@ -32,6 +32,20 @@ public enum AttackFailure
     PlayerDead
 }
 
+public enum SkillFailure
+{
+    None,
+    PlayerNotFound,
+    PlayerDead,
+    StaleSequence,
+    UnknownSkill,
+    WrongArchetype,
+    MonsterNotFound,
+    OutOfRange,
+    InsufficientMana,
+    Cooldown
+}
+
 public enum PickupFailure
 {
     None,
@@ -56,7 +70,9 @@ public sealed record WorldPlayer(
     CharacterArchetype Archetype = CharacterArchetype.Warrior,
     int AttackPower = 12,
     int Defense = 3,
-    int AttackCooldownTicks = 10)
+    int AttackCooldownTicks = 10,
+    int Mana = 30,
+    int MaximumMana = 30)
 {
     public bool IsAlive => Health > 0;
 }
@@ -102,6 +118,18 @@ public readonly record struct AttackResult(
     public bool IsSuccess => Failure == AttackFailure.None;
 }
 
+public readonly record struct SkillResult(
+    SkillFailure Failure,
+    string SkillId,
+    WorldPlayer Player,
+    WorldMonster? Monster,
+    int Damage,
+    bool Defeated,
+    WorldDrop? Drop)
+{
+    public bool IsSuccess => Failure == SkillFailure.None;
+}
+
 public readonly record struct PickupResult(
     PickupFailure Failure,
     WorldPlayer Player,
@@ -125,6 +153,7 @@ public sealed class WorldInstance
     public const int MonsterAttackCooldownTicks = 20;
     public const int PlayerRespawnTicks = 60;
     public const int PlayerRespawnProtectionTicks = 40;
+    public const int ManaRegenerationIntervalTicks = 20;
     private readonly object _gate = new();
     private readonly Dictionary<Guid, WorldPlayer> _players = [];
     private readonly Dictionary<Guid, WorldMonster> _monsters = [];
@@ -132,6 +161,7 @@ public sealed class WorldInstance
     private readonly Dictionary<Guid, WorldDrop> _groundDrops = [];
     private readonly Dictionary<Guid, Dictionary<string, int>> _inventories = [];
     private readonly Dictionary<Guid, Dictionary<EquipmentSlot, string>> _equipment = [];
+    private readonly Dictionary<(Guid CharacterId, string SkillId), long> _skillLastCastTicks = [];
     private readonly Dictionary<Guid, GridPosition> _playerSpawns = [];
     private readonly HashSet<GridPosition> _occupiedPositions = [];
     private long _nextDropSequence;
@@ -412,6 +442,96 @@ public sealed class WorldInstance
         }
     }
 
+    public SkillResult CastSkill(
+        Guid characterId,
+        long sequence,
+        string skillId,
+        Guid monsterId,
+        long currentTick)
+    {
+        lock (_gate)
+        {
+            if (!_players.TryGetValue(characterId, out var player))
+            {
+                return new SkillResult(SkillFailure.PlayerNotFound, skillId,
+                    new WorldPlayer(characterId, default, 0), null, 0, false, null);
+            }
+
+            SkillResult Reject(SkillFailure failure, WorldMonster? target = null) =>
+                new(failure, skillId, player, target, 0, false, null);
+
+            if (sequence <= player.LastProcessedSequence)
+            {
+                return Reject(SkillFailure.StaleSequence);
+            }
+
+            if (!player.IsAlive)
+            {
+                return Reject(SkillFailure.PlayerDead);
+            }
+
+            player = player with { LastProcessedSequence = sequence };
+            _players[characterId] = player;
+            if (!SkillCatalog.TryGet(skillId, out var skill))
+            {
+                return Reject(SkillFailure.UnknownSkill);
+            }
+
+            if (skill.Archetype != player.Archetype)
+            {
+                return Reject(SkillFailure.WrongArchetype);
+            }
+
+            if (!_monsters.TryGetValue(monsterId, out var monster))
+            {
+                return Reject(SkillFailure.MonsterNotFound);
+            }
+
+            if (player.Position.ChebyshevDistanceTo(monster.Position) > skill.Range)
+            {
+                return Reject(SkillFailure.OutOfRange, monster);
+            }
+
+            if (player.Mana < skill.ManaCost)
+            {
+                return Reject(SkillFailure.InsufficientMana, monster);
+            }
+
+            var key = (characterId, skill.SkillId);
+            if (_skillLastCastTicks.TryGetValue(key, out var lastCastTick)
+                && currentTick - lastCastTick < skill.CooldownTicks)
+            {
+                return Reject(SkillFailure.Cooldown, monster);
+            }
+
+            player = player with { Mana = player.Mana - skill.ManaCost };
+            _players[characterId] = player;
+            _skillLastCastTicks[key] = currentTick;
+            var damage = Math.Min(player.AttackPower + skill.DamageBonus, monster.Health);
+            monster = monster with { Health = monster.Health - damage };
+            var defeated = monster.Health == 0;
+            WorldDrop? drop = null;
+            if (defeated)
+            {
+                _monsters.Remove(monsterId);
+                _occupiedPositions.Remove(monster.Position);
+                _monsterSpawns[monsterId] = _monsterSpawns[monsterId] with
+                {
+                    RespawnAtTick = currentTick + MonsterRespawnTicks
+                };
+                drop = CreateDrop(_monsterSpawns[monsterId].DropItemId,
+                    monster.Position, characterId, currentTick);
+            }
+            else
+            {
+                _monsters[monsterId] = monster;
+            }
+
+            return new SkillResult(SkillFailure.None, skillId, player, monster,
+                damage, defeated, drop);
+        }
+    }
+
     public PickupResult Pickup(
         Guid characterId,
         long sequence,
@@ -491,6 +611,10 @@ public sealed class WorldInstance
 
             _occupiedPositions.Remove(player.Position);
             _playerSpawns.Remove(characterId);
+            foreach (var key in _skillLastCastTicks.Keys.Where(key => key.CharacterId == characterId).ToArray())
+            {
+                _skillLastCastTicks.Remove(key);
+            }
             return true;
         }
     }
@@ -723,11 +847,21 @@ public sealed class WorldInstance
                 {
                     Position = spawn,
                     Health = player.MaximumHealth,
+                    Mana = player.MaximumMana,
                     RespawnAtTick = null,
                     InvulnerableUntilTick = currentTick + PlayerRespawnProtectionTicks
                 };
                 _occupiedPositions.Add(spawn);
                 changes++;
+            }
+
+            if (currentTick % ManaRegenerationIntervalTicks == 0)
+            {
+                foreach (var player in _players.Values.Where(value => value.IsAlive && value.Mana < value.MaximumMana).ToArray())
+                {
+                    _players[player.CharacterId] = player with { Mana = player.Mana + 1 };
+                    changes++;
+                }
             }
 
             foreach (var spawn in _monsterSpawns.Values
@@ -872,16 +1006,20 @@ public sealed class WorldInstance
     {
         CharacterArchetype.Warrior => new WorldPlayer(
             characterId, position, 0, MaximumHealth: 120, Health: 120,
-            Archetype: archetype, AttackPower: 12, Defense: 3, AttackCooldownTicks: 10),
+            Archetype: archetype, AttackPower: 12, Defense: 3, AttackCooldownTicks: 10,
+            Mana: 30, MaximumMana: 30),
         CharacterArchetype.Mage => new WorldPlayer(
             characterId, position, 0, MaximumHealth: 80, Health: 80,
-            Archetype: archetype, AttackPower: 14, Defense: 1, AttackCooldownTicks: 12),
+            Archetype: archetype, AttackPower: 14, Defense: 1, AttackCooldownTicks: 12,
+            Mana: 60, MaximumMana: 60),
         CharacterArchetype.Taoist => new WorldPlayer(
             characterId, position, 0, MaximumHealth: 95, Health: 95,
-            Archetype: archetype, AttackPower: 10, Defense: 2, AttackCooldownTicks: 11),
+            Archetype: archetype, AttackPower: 10, Defense: 2, AttackCooldownTicks: 11,
+            Mana: 50, MaximumMana: 50),
         CharacterArchetype.Assassin => new WorldPlayer(
             characterId, position, 0, MaximumHealth: 90, Health: 90,
-            Archetype: archetype, AttackPower: 13, Defense: 1, AttackCooldownTicks: 8),
+            Archetype: archetype, AttackPower: 13, Defense: 1, AttackCooldownTicks: 8,
+            Mana: 35, MaximumMana: 35),
         _ => throw new ArgumentOutOfRangeException(nameof(archetype))
     };
 
