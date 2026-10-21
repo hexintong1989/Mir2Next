@@ -54,7 +54,8 @@ public enum ChatFailure
     PlayerDead,
     StaleSequence,
     InvalidText,
-    Cooldown
+    Cooldown,
+    NotInParty
 }
 
 public enum UseItemFailure
@@ -158,7 +159,11 @@ public readonly record struct SkillResult(
     public bool IsSuccess => Failure == SkillFailure.None;
 }
 
-public readonly record struct ChatResult(ChatFailure Failure, WorldPlayer Player, string? Text)
+public readonly record struct ChatResult(
+    ChatFailure Failure,
+    WorldPlayer Player,
+    string? Text,
+    IReadOnlyList<Guid>? RecipientCharacterIds = null)
 {
     public bool IsSuccess => Failure == ChatFailure.None;
 }
@@ -634,6 +639,56 @@ public sealed class WorldInstance
 
             _chatLastSentTicks[characterId] = currentTick;
             return new ChatResult(ChatFailure.None, player, normalized);
+        }
+    }
+
+    public ChatResult PartyChat(Guid characterId, long sequence, string? text, long currentTick)
+    {
+        lock (_gate)
+        {
+            if (!_players.TryGetValue(characterId, out var player))
+            {
+                return new ChatResult(ChatFailure.PlayerNotFound,
+                    new WorldPlayer(characterId, default, 0), null);
+            }
+
+            if (sequence <= player.LastProcessedSequence)
+            {
+                return new ChatResult(ChatFailure.StaleSequence, player, null);
+            }
+
+            if (!player.IsAlive)
+            {
+                return new ChatResult(ChatFailure.PlayerDead, player, null);
+            }
+
+            player = player with { LastProcessedSequence = sequence };
+            _players[characterId] = player;
+            if (!_partyByCharacter.TryGetValue(characterId, out var partyId))
+            {
+                return new ChatResult(ChatFailure.NotInParty, player, null);
+            }
+
+            var normalized = text?.Trim();
+            if (string.IsNullOrWhiteSpace(normalized)
+                || normalized.Length > MaximumChatLength
+                || normalized.Any(char.IsControl))
+            {
+                return new ChatResult(ChatFailure.InvalidText, player, null);
+            }
+
+            if (_chatLastSentTicks.TryGetValue(characterId, out var lastSentTick)
+                && currentTick - lastSentTick < ChatCooldownTicks)
+            {
+                return new ChatResult(ChatFailure.Cooldown, player, null);
+            }
+
+            _chatLastSentTicks[characterId] = currentTick;
+            return new ChatResult(
+                ChatFailure.None,
+                player,
+                normalized,
+                _parties[partyId].MemberCharacterIds.ToArray());
         }
     }
 

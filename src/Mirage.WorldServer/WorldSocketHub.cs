@@ -336,6 +336,24 @@ public sealed class WorldSocketHub(
                 continue;
             }
 
+            if (string.Equals(message.Type, "partyChat", StringComparison.Ordinal))
+            {
+                var chat = await simulation.QueuePartyChatAsync(
+                    connection.CharacterId, message.Sequence, message.Text, cancellationToken);
+                if (!chat.IsSuccess)
+                {
+                    await connection.SendAsync(new ServerEnvelope("partyChatRejected", new
+                    {
+                        sequence = message.Sequence,
+                        code = chat.Failure.ToString()
+                    }), cancellationToken);
+                    continue;
+                }
+
+                await BroadcastPartyChatAsync(chat, message.Sequence, cancellationToken);
+                continue;
+            }
+
             if (string.Equals(message.Type, "useItem", StringComparison.Ordinal)
                 && !string.IsNullOrWhiteSpace(message.ItemId))
             {
@@ -621,6 +639,27 @@ public sealed class WorldSocketHub(
             }
 
             await connection.SendAsync(message, cancellationToken);
+        }
+    }
+
+    private async Task BroadcastPartyChatAsync(
+        ChatResult chat,
+        long sequence,
+        CancellationToken cancellationToken)
+    {
+        var message = new ServerEnvelope("partyChatMessage", new
+        {
+            sequence,
+            characterId = chat.Player.CharacterId,
+            text = chat.Text,
+            sentAt = DateTimeOffset.UtcNow
+        });
+        foreach (var characterId in chat.RecipientCharacterIds ?? [])
+        {
+            if (_connections.TryGetValue(characterId, out var connection))
+            {
+                await connection.SendAsync(message, cancellationToken);
+            }
         }
     }
 

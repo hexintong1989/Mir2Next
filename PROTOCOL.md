@@ -43,6 +43,7 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 {"type":"partyInvite","sequence":9,"targetCharacterId":"00000000-0000-0000-0000-000000000002"}
 {"type":"partyAccept","sequence":10,"inviterCharacterId":"00000000-0000-0000-0000-000000000001"}
 {"type":"partyLeave","sequence":11}
+{"type":"partyChat","sequence":12,"text":"准备出发"}
 ```
 
 `sequence` 由移动、攻击、拾取、装备、技能、聊天、物品使用和组队操作共用，对每个角色必须单调递增。基础攻击由服务端检查目标存在、近战距离及攻击间隔。技能由服务端检查职业、等级、距离、法力及该技能的冷却。消息必须是 UTF-8 JSON 文本且不超过 4096 字节。
@@ -61,6 +62,7 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 - `itemUsed` / `itemUseRejected`：使用消耗品后的权威生命、法力及背包快照，或拒绝原因。
 - `partyInviteSent` / `partyInvite`：邀请确认，或向指定在线目标投递带过期帧的邀请。
 - `partyUpdated` / `partyRejected`：队伍成员、队长变化后的完整快照，或组队操作拒绝原因。
+- `partyChatMessage` / `partyChatRejected`：投递给全部在线队员的队伍频道消息，或拒绝原因。
 - `dropSnapshot`：视野内地面物品、击杀者保护截止帧及物品过期帧。
 - `inventorySnapshot`：角色进入世界时的服务端背包快照。
 - `pickupResult` / `pickupRejected`：拾取后的堆叠数量或拒绝原因。
@@ -77,4 +79,4 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 聊天单条最多120个UTF-16字符，禁止控制字符，同一角色至少间隔20帧（1秒），只广播给12格AOI内的玩家。
 首批消耗品：`venison` 恢复25点生命，`mana_herb` 恢复15点法力；资源已满时不消耗物品。
 
-组队最多5人，邀请有效600帧（30秒）；已有队伍时仅队长可邀请。队长离队或断线时按加入顺序转移，队伍不足2人自动解散。组队状态当前属于世界服在线会话，不跨服务重启保存。
+组队最多5人，邀请有效600帧（30秒）；已有队伍时仅队长可邀请。队长离队或断线时按加入顺序转移，队伍不足2人自动解散。队伍聊天不受AOI距离限制，但与本地聊天共用1秒发送冷却和文本安全规则。组队状态当前属于世界服在线会话，不跨服务重启保存。

@@ -77,6 +77,19 @@ public sealed class WorldSimulation
         return await completion.Task.WaitAsync(cancellationToken);
     }
 
+    public async ValueTask<ChatResult> QueuePartyChatAsync(
+        Guid characterId,
+        long sequence,
+        string? text,
+        CancellationToken cancellationToken = default)
+    {
+        var completion = new TaskCompletionSource<ChatResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var command = new PartyChatCommand(characterId, sequence, text, completion, cancellationToken);
+        await _commands.Writer.WriteAsync(command, cancellationToken);
+        return await completion.Task.WaitAsync(cancellationToken);
+    }
+
     public async ValueTask<UseItemResult> QueueUseItemAsync(
         Guid characterId,
         long sequence,
@@ -248,6 +261,19 @@ public sealed class WorldSimulation
     {
         public void Execute(WorldInstance world, long currentTick) =>
             Completion.TrySetResult(world.Chat(CharacterId, Sequence, Text, currentTick));
+
+        public void Cancel() => Completion.TrySetCanceled(CancellationToken);
+    }
+
+    private sealed record PartyChatCommand(
+        Guid CharacterId,
+        long Sequence,
+        string? Text,
+        TaskCompletionSource<ChatResult> Completion,
+        CancellationToken CancellationToken) : IWorldCommand
+    {
+        public void Execute(WorldInstance world, long currentTick) =>
+            Completion.TrySetResult(world.PartyChat(CharacterId, Sequence, Text, currentTick));
 
         public void Cancel() => Completion.TrySetCanceled(CancellationToken);
     }

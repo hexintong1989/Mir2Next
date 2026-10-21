@@ -48,6 +48,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("聊天在世界帧校验内容频率和序号", ChatValidatesContentRateAndSequence),
     ("组队邀请与接受必须经过世界帧", PartyInviteAndAcceptExecuteOnWorldTick),
     ("组队校验队长人数过期并在离队时转移队长", PartyRulesAndLeaderTransferAreAuthoritative),
+    ("队伍聊天跨距离投递并共用聊天冷却", PartyChatUsesPartyRecipientsAndSharedCooldown),
     ("消耗品扣除背包并恢复受上限约束的资源", ConsumablesRestoreResourcesWithoutDuplication),
     ("物品与资源同版本保存且旧快照不可覆盖", CombinedCharacterStateIsVersioned),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
@@ -843,6 +844,32 @@ static Task PartyRulesAndLeaderTransferAreAuthoritative()
     Require(world.InviteToParty(leader, 6, overflow, 30).Failure == PartyFailure.StaleSequence,
         "组队操作必须与其他角色指令共用单调序号");
     return Task.CompletedTask;
+}
+
+static async Task PartyChatUsesPartyRecipientsAndSharedCooldown()
+{
+    var world = new WorldInstance("test", 20, 20);
+    var leader = Guid.NewGuid();
+    var member = Guid.NewGuid();
+    var outsider = Guid.NewGuid();
+    world.Join(leader, new GridPosition(1, 1));
+    world.Join(member, new GridPosition(18, 18));
+    world.Join(outsider, new GridPosition(10, 10));
+    Require(world.InviteToParty(leader, 1, member, 0).IsSuccess, "应能发出队伍邀请");
+    Require(world.AcceptPartyInvite(member, 1, leader, 0).IsSuccess, "应能建立队伍");
+
+    var simulation = new WorldSimulation(world);
+    var pending = simulation.QueuePartyChatAsync(leader, 2, "  集合  ").AsTask();
+    Require(!pending.IsCompleted, "队伍聊天必须等待世界帧");
+    simulation.Tick();
+    var chat = await pending;
+    Require(chat.IsSuccess && chat.Text == "集合", "队伍聊天应复用文本规范化");
+    Require(chat.RecipientCharacterIds?.SequenceEqual([leader, member]) == true,
+        "队伍聊天应投递给所有队员且不受AOI距离限制");
+    Require(world.Chat(leader, 3, "本地频道", 1).Failure == ChatFailure.Cooldown,
+        "本地和队伍频道必须共用发送冷却");
+    Require(world.PartyChat(outsider, 1, "越权", 2).Failure == ChatFailure.NotInParty,
+        "未组队角色不能发送队伍聊天");
 }
 
 static async Task ConsumablesRestoreResourcesWithoutDuplication()
