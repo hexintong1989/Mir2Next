@@ -25,6 +25,8 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("AOI 增量识别进入更新与离开", AreaOfInterestTracksDeltas),
     ("离开地图会释放占用位置", LeavingWorldReleasesPosition),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
+    ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
+    ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
     ("世界票据可验证且篡改会失败", WorldTicketRejectsTampering),
     ("世界票据校验区服和有效期", WorldTicketChecksRealmAndExpiry),
     ("世界票据只能兑换一次", WorldTicketCannotBeReplayed)
@@ -274,6 +276,37 @@ static async Task CharacterOwnershipIsEnforced()
     Require(otherAccount is null, "其他账号不能选择该角色");
 }
 
+static async Task CharacterDeletionRequiresConfirmation()
+{
+    var clock = new TestClock(new DateTimeOffset(2026, 10, 21, 0, 0, 0, TimeSpan.Zero));
+    var service = CreateCharacterService(clock);
+    var accountId = Guid.NewGuid();
+    var created = await service.CreateAsync(accountId, "Delete_Me", CharacterArchetype.Mage);
+    var mismatch = await service.RequestDeletionAsync(accountId, created.Value!.Id, "someone_else");
+    var requested = await service.RequestDeletionAsync(accountId, created.Value.Id, "delete_me");
+
+    Require(
+        mismatch.Error?.Code == ErrorCode.CharacterDeletionConfirmationMismatch,
+        "错误角色名不能申请删除");
+    Require(requested.IsSuccess, "正确角色名应能申请删除");
+    var pendingCharacter = requested.Value!;
+    Require(pendingCharacter.IsPendingDeletion, "正确角色名应进入待删除状态");
+    Require(pendingCharacter.DeleteAfter == clock.UtcNow.Add(CharacterService.DeletionDelay), "应保留24小时冷静期");
+}
+
+static async Task CharacterDeletionCanBeCancelled()
+{
+    var service = CreateCharacterService();
+    var accountId = Guid.NewGuid();
+    var created = await service.CreateAsync(accountId, "keep_me", CharacterArchetype.Taoist);
+    await service.RequestDeletionAsync(accountId, created.Value!.Id, "keep_me");
+    var cancelled = await service.CancelDeletionAsync(accountId, created.Value.Id);
+    var selected = await service.FindOwnedAsync(accountId, created.Value.Id);
+
+    Require(cancelled.IsSuccess && !cancelled.Value!.IsPendingDeletion, "撤销后不应再处于待删除状态");
+    Require(selected?.DeleteAfter is null, "撤销后删除时间应清空");
+}
+
 static Task WorldTicketRejectsTampering()
 {
     var protector = CreateTicketProtector();
@@ -318,8 +351,8 @@ static AccountService CreateService(IClock? clock = null, TimeSpan? sessionLifet
         new InMemorySessionStore(sessionLifetime),
         clock ?? new TestClock(DateTimeOffset.UtcNow));
 
-static CharacterService CreateCharacterService() =>
-    new(new InMemoryCharacterRepository(), new TestClock(DateTimeOffset.UtcNow));
+static CharacterService CreateCharacterService(IClock? clock = null) =>
+    new(new InMemoryCharacterRepository(), clock ?? new TestClock(DateTimeOffset.UtcNow));
 
 static HmacWorldEntryTicketProtector CreateTicketProtector(TimeSpan? lifetime = null) =>
     new(Enumerable.Range(0, 32).Select(value => (byte)value).ToArray(), lifetime);

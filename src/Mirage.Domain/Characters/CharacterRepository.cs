@@ -22,6 +22,13 @@ public interface ICharacterRepository
         GameCharacter character,
         int accountLimit,
         CancellationToken cancellationToken);
+
+    ValueTask<GameCharacter?> SetDeletionScheduleAsync(
+        Guid accountId,
+        Guid characterId,
+        DateTimeOffset? requestedAt,
+        DateTimeOffset? deleteAfter,
+        CancellationToken cancellationToken);
 }
 
 public sealed class InMemoryCharacterRepository : ICharacterRepository
@@ -86,6 +93,38 @@ public sealed class InMemoryCharacterRepository : ICharacterRepository
             _charactersByName.Add(character.NormalizedName, character);
             characters.Add(character);
             return ValueTask.FromResult(AddCharacterOutcome.Added);
+        }
+    }
+
+    public ValueTask<GameCharacter?> SetDeletionScheduleAsync(
+        Guid accountId,
+        Guid characterId,
+        DateTimeOffset? requestedAt,
+        DateTimeOffset? deleteAfter,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (!_charactersByAccount.TryGetValue(accountId, out var characters))
+            {
+                return ValueTask.FromResult<GameCharacter?>(null);
+            }
+
+            var index = characters.FindIndex(character => character.Id == characterId);
+            if (index < 0)
+            {
+                return ValueTask.FromResult<GameCharacter?>(null);
+            }
+
+            var updated = characters[index] with
+            {
+                DeletionRequestedAt = requestedAt,
+                DeleteAfter = deleteAfter
+            };
+            characters[index] = updated;
+            _charactersByName[updated.NormalizedName] = updated;
+            return ValueTask.FromResult<GameCharacter?>(updated);
         }
     }
 }

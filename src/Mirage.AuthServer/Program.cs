@@ -177,6 +177,48 @@ app.MapPost("/api/v1/characters", async (
         : ToHttpError(result.Error!);
 });
 
+app.MapPost("/api/v1/characters/{characterId:guid}/deletion", async (
+    Guid characterId,
+    RequestCharacterDeletionRequest request,
+    HttpRequest httpRequest,
+    AccountService accounts,
+    CharacterService characters,
+    CancellationToken cancellationToken) =>
+{
+    var authentication = await accounts.ValidateSessionAsync(ReadBearerToken(httpRequest), cancellationToken);
+    if (!authentication.IsSuccess)
+    {
+        return ToHttpError(authentication.Error!);
+    }
+
+    var result = await characters.RequestDeletionAsync(
+        authentication.Value!.AccountId,
+        characterId,
+        request.ConfirmationName,
+        cancellationToken);
+    return result.IsSuccess ? Results.Ok(ToCharacterResponse(result.Value!)) : ToHttpError(result.Error!);
+});
+
+app.MapDelete("/api/v1/characters/{characterId:guid}/deletion", async (
+    Guid characterId,
+    HttpRequest httpRequest,
+    AccountService accounts,
+    CharacterService characters,
+    CancellationToken cancellationToken) =>
+{
+    var authentication = await accounts.ValidateSessionAsync(ReadBearerToken(httpRequest), cancellationToken);
+    if (!authentication.IsSuccess)
+    {
+        return ToHttpError(authentication.Error!);
+    }
+
+    var result = await characters.CancelDeletionAsync(
+        authentication.Value!.AccountId,
+        characterId,
+        cancellationToken);
+    return result.IsSuccess ? Results.Ok(ToCharacterResponse(result.Value!)) : ToHttpError(result.Error!);
+});
+
 app.MapPost("/api/v1/characters/{characterId:guid}/entry-ticket", async (
     Guid characterId,
     WorldEntryTicketRequest request,
@@ -208,6 +250,11 @@ app.MapPost("/api/v1/characters/{characterId:guid}/entry-ticket", async (
     if (character is null)
     {
         return Results.NotFound(new ApiError("CharacterNotFound", "角色不存在。"));
+    }
+
+    if (character.IsPendingDeletion)
+    {
+        return ToHttpError(new DomainError(ErrorCode.CharacterPendingDeletion, "待删除角色不能进入游戏。"));
     }
 
     var protector = services.GetService<HmacWorldEntryTicketProtector>();
@@ -242,6 +289,9 @@ static IResult ToHttpError(DomainError error)
     {
         ErrorCode.AccountAlreadyExists or ErrorCode.CharacterNameAlreadyExists or ErrorCode.CharacterLimitReached =>
             Results.Conflict(body),
+        ErrorCode.CharacterPendingDeletion or ErrorCode.CharacterDeletionNotPending =>
+            Results.Conflict(body),
+        ErrorCode.CharacterNotFound => Results.NotFound(body),
         ErrorCode.InvalidCredentials or ErrorCode.InvalidSession =>
             Results.Json(body, statusCode: StatusCodes.Status401Unauthorized),
         _ => Results.BadRequest(body)
@@ -249,7 +299,14 @@ static IResult ToHttpError(DomainError error)
 }
 
 static CharacterResponse ToCharacterResponse(GameCharacter character) =>
-    new(character.Id, character.Name, character.Archetype, character.Level, character.CreatedAt);
+    new(
+        character.Id,
+        character.Name,
+        character.Archetype,
+        character.Level,
+        character.CreatedAt,
+        character.DeletionRequestedAt,
+        character.DeleteAfter);
 
 static string? ReadBearerToken(HttpRequest request)
 {

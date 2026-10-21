@@ -11,7 +11,12 @@ public sealed record GameCharacter(
     string NormalizedName,
     CharacterArchetype Archetype,
     int Level,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? DeletionRequestedAt = null,
+    DateTimeOffset? DeleteAfter = null)
+{
+    public bool IsPendingDeletion => DeletionRequestedAt is not null;
+}
 
 public static partial class CharacterPolicy
 {

@@ -13,7 +13,8 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) : I
         CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT character_id, account_id, name, normalized_name, archetype, level, created_at
+            SELECT character_id, account_id, name, normalized_name, archetype, level, created_at,
+                   deletion_requested_at, delete_after
             FROM characters
             WHERE account_id = $1 AND character_id = $2
             """;
@@ -29,7 +30,8 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) : I
         CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT character_id, account_id, name, normalized_name, archetype, level, created_at
+            SELECT character_id, account_id, name, normalized_name, archetype, level, created_at,
+                   deletion_requested_at, delete_after
             FROM characters
             WHERE account_id = $1
             ORDER BY created_at, character_id
@@ -109,6 +111,29 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) : I
         }
     }
 
+    public async ValueTask<GameCharacter?> SetDeletionScheduleAsync(
+        Guid accountId,
+        Guid characterId,
+        DateTimeOffset? requestedAt,
+        DateTimeOffset? deleteAfter,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE characters
+            SET deletion_requested_at = $3, delete_after = $4
+            WHERE account_id = $1 AND character_id = $2
+            RETURNING character_id, account_id, name, normalized_name, archetype, level, created_at,
+                      deletion_requested_at, delete_after
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue(accountId);
+        command.Parameters.AddWithValue(characterId);
+        command.Parameters.AddWithValue(requestedAt?.UtcDateTime ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue(deleteAfter?.UtcDateTime ?? (object)DBNull.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadCharacter(reader) : null;
+    }
+
     private static GameCharacter ReadCharacter(NpgsqlDataReader reader) =>
         new(
             reader.GetGuid(0),
@@ -117,5 +142,7 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) : I
             reader.GetString(3),
             (CharacterArchetype)reader.GetInt16(4),
             reader.GetInt32(5),
-            new DateTimeOffset(reader.GetDateTime(6), TimeSpan.Zero));
+            new DateTimeOffset(reader.GetDateTime(6), TimeSpan.Zero),
+            reader.IsDBNull(7) ? null : new DateTimeOffset(reader.GetDateTime(7), TimeSpan.Zero),
+            reader.IsDBNull(8) ? null : new DateTimeOffset(reader.GetDateTime(8), TimeSpan.Zero));
 }

@@ -8,6 +8,8 @@ public sealed class CharacterService(
     ICharacterRepository characters,
     IClock clock)
 {
+    public static readonly TimeSpan DeletionDelay = TimeSpan.FromHours(24);
+
     public ValueTask<GameCharacter?> FindOwnedAsync(
         Guid accountId,
         Guid characterId,
@@ -65,5 +67,72 @@ public sealed class CharacterService(
                 $"每个账号最多创建 {CharacterPolicy.MaximumCharactersPerAccount} 个角色。"),
             _ => throw new ArgumentOutOfRangeException(nameof(outcome))
         };
+    }
+
+    public async ValueTask<Result<GameCharacter>> RequestDeletionAsync(
+        Guid accountId,
+        Guid characterId,
+        string? confirmationName,
+        CancellationToken cancellationToken = default)
+    {
+        var character = await characters.FindOwnedAsync(accountId, characterId, cancellationToken);
+        if (character is null)
+        {
+            return Result<GameCharacter>.Failure(ErrorCode.CharacterNotFound, "角色不存在。");
+        }
+
+        var normalizedConfirmation = CharacterPolicy.NormalizeName(
+            CharacterPolicy.DisplayName(confirmationName));
+        if (!string.Equals(normalizedConfirmation, character.NormalizedName, StringComparison.Ordinal))
+        {
+            return Result<GameCharacter>.Failure(
+                ErrorCode.CharacterDeletionConfirmationMismatch,
+                "输入的角色名与待删除角色不一致。");
+        }
+
+        if (character.IsPendingDeletion)
+        {
+            return Result<GameCharacter>.Success(character);
+        }
+
+        var requestedAt = clock.UtcNow;
+        var updated = await characters.SetDeletionScheduleAsync(
+            accountId,
+            characterId,
+            requestedAt,
+            requestedAt.Add(DeletionDelay),
+            cancellationToken);
+        return updated is null
+            ? Result<GameCharacter>.Failure(ErrorCode.CharacterNotFound, "角色不存在。")
+            : Result<GameCharacter>.Success(updated);
+    }
+
+    public async ValueTask<Result<GameCharacter>> CancelDeletionAsync(
+        Guid accountId,
+        Guid characterId,
+        CancellationToken cancellationToken = default)
+    {
+        var character = await characters.FindOwnedAsync(accountId, characterId, cancellationToken);
+        if (character is null)
+        {
+            return Result<GameCharacter>.Failure(ErrorCode.CharacterNotFound, "角色不存在。");
+        }
+
+        if (!character.IsPendingDeletion)
+        {
+            return Result<GameCharacter>.Failure(
+                ErrorCode.CharacterDeletionNotPending,
+                "角色当前没有待处理的删除申请。");
+        }
+
+        var updated = await characters.SetDeletionScheduleAsync(
+            accountId,
+            characterId,
+            null,
+            null,
+            cancellationToken);
+        return updated is null
+            ? Result<GameCharacter>.Failure(ErrorCode.CharacterNotFound, "角色不存在。")
+            : Result<GameCharacter>.Success(updated);
     }
 }

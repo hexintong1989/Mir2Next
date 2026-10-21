@@ -10,7 +10,11 @@ public enum ErrorCode
     InvalidCharacterName,
     InvalidCharacterArchetype,
     CharacterNameAlreadyExists,
-    CharacterLimitReached
+    CharacterLimitReached,
+    CharacterNotFound,
+    CharacterDeletionConfirmationMismatch,
+    CharacterPendingDeletion,
+    CharacterDeletionNotPending
 }
 
 public sealed record DomainError(ErrorCode Code, string Message);

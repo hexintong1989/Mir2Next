@@ -10,12 +10,16 @@ public enum CharacterArchetype
 
 public sealed record CreateCharacterRequest(string? Name, CharacterArchetype Archetype);
 
+public sealed record RequestCharacterDeletionRequest(string? ConfirmationName);
+
 public sealed record CharacterResponse(
     Guid CharacterId,
     string Name,
     CharacterArchetype Archetype,
     int Level,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? DeletionRequestedAt,
+    DateTimeOffset? DeleteAfter);
 
 public sealed record RealmResponse(
     string RealmId,
