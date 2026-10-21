@@ -506,6 +506,25 @@ public sealed class WorldInstance
         }
     }
 
+    public void ReplaceInventory(Guid characterId, IReadOnlyList<InventoryItem> items)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        if (items.Count > InventorySlotLimit
+            || items.Any(item => string.IsNullOrWhiteSpace(item.ItemId) || item.Quantity <= 0)
+            || items.Select(item => item.ItemId).Distinct(StringComparer.Ordinal).Count() != items.Count)
+        {
+            throw new ArgumentException("Inventory snapshot is invalid.", nameof(items));
+        }
+
+        lock (_gate)
+        {
+            _inventories[characterId] = items.ToDictionary(
+                item => item.ItemId,
+                item => item.Quantity,
+                StringComparer.Ordinal);
+        }
+    }
+
     public int Advance(long currentTick)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(currentTick);

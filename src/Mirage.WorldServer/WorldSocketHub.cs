@@ -11,6 +11,7 @@ public sealed class WorldSocketHub(
     WorldInstance world,
     WorldSimulation simulation,
     ICharacterWorldStateStore worldStates,
+    ICharacterInventoryStore inventories,
     ILogger<WorldSocketHub> logger)
 {
     private const int MaximumMessageBytes = 4096;
@@ -52,6 +53,8 @@ public sealed class WorldSocketHub(
 
         try
         {
+            var inventory = await inventories.LoadAsync(characterId, cancellationToken);
+            world.ReplaceInventory(characterId, inventory?.Items ?? []);
             await connection.SendAsync(new ServerEnvelope(
                 "welcome",
                 new
@@ -85,6 +88,7 @@ public sealed class WorldSocketHub(
                 if (departingPlayer is not null)
                 {
                     await TryPersistWorldStateAsync(departingPlayer, CancellationToken.None);
+                    await TryPersistInventoryAsync(characterId, CancellationToken.None);
                 }
                 await RefreshVisibilityAsync(null, CancellationToken.None);
             }
@@ -241,6 +245,7 @@ public sealed class WorldSocketHub(
                             pickup.InventoryItem.Quantity)
                     }),
                     cancellationToken);
+                await TryPersistInventoryAsync(connection.CharacterId, cancellationToken);
                 await BroadcastDropSnapshotAsync(cancellationToken);
                 continue;
             }
@@ -361,6 +366,32 @@ public sealed class WorldSocketHub(
                 exception,
                 "Failed to persist world state for {CharacterId}.",
                 player.CharacterId);
+        }
+    }
+
+    private async Task TryPersistInventoryAsync(
+        Guid characterId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await inventories.SaveAsync(
+                new CharacterInventorySnapshot(
+                    characterId,
+                    world.InventorySnapshot(characterId),
+                    DateTimeOffset.UtcNow),
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(
+                exception,
+                "Failed to persist inventory for {CharacterId}.",
+                characterId);
         }
     }
 

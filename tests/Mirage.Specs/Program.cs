@@ -31,6 +31,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("死亡怪物会按固定帧刷新", DefeatedMonsterRespawns),
     ("怪物死亡掉落具有击杀者保护期", MonsterDropHasOwnerProtection),
     ("拾取指令在世界帧结算并进入背包", PickupExecutesOnWorldTick),
+    ("背包快照持久化拒绝旧版本覆盖", InventorySnapshotRejectsStaleSave),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -397,6 +398,26 @@ static async Task PickupExecutesOnWorldTick()
     var result = await pending;
     Require(result.IsSuccess && result.InventoryItem?.Quantity == 1, "世界帧应完成拾取并更新背包");
     Require(world.DropSnapshot().Count == 0, "已拾取掉落应从地面移除");
+}
+
+static async Task InventorySnapshotRejectsStaleSave()
+{
+    var store = new InMemoryCharacterInventoryStore();
+    var characterId = Guid.NewGuid();
+    var savedAt = new DateTimeOffset(2026, 10, 21, 2, 0, 0, TimeSpan.Zero);
+    var latest = new CharacterInventorySnapshot(
+        characterId,
+        [new InventoryItem("wooden_token", 2)],
+        savedAt);
+    var stale = new CharacterInventorySnapshot(
+        characterId,
+        [new InventoryItem("wooden_token", 1)],
+        savedAt.AddSeconds(-1));
+
+    Require(await store.SaveAsync(latest, CancellationToken.None), "最新背包应保存成功");
+    Require(!await store.SaveAsync(stale, CancellationToken.None), "旧背包不能覆盖新版本");
+    var loaded = await store.LoadAsync(characterId, CancellationToken.None);
+    Require(loaded?.Items.Single().Quantity == 2, "应读回最新背包数量");
 }
 
 static async Task CharacterOwnershipIsEnforced()

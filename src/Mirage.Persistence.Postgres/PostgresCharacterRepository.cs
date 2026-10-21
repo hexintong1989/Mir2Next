@@ -1,11 +1,14 @@
 using System.Data;
 using Mirage.Domain.Characters;
 using Mirage.Shared.Contracts;
+using Mirage.Domain.World;
 using Npgsql;
 
 namespace Mirage.Persistence.Postgres;
 
-public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) : ICharacterRepository
+public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
+    ICharacterRepository,
+    ICharacterInventoryStore
 {
     public async ValueTask<GameCharacter?> FindOwnedAsync(
         Guid accountId,
@@ -223,6 +226,87 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) : I
 
         await transaction.CommitAsync(cancellationToken);
         return due;
+    }
+
+    public async ValueTask<CharacterInventorySnapshot?> LoadAsync(
+        Guid characterId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT state.saved_at, item.item_id, item.quantity
+            FROM character_inventory_state state
+            LEFT JOIN character_inventory_items item
+              ON item.character_id = state.character_id
+            WHERE state.character_id = $1
+            ORDER BY item.item_id
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue(characterId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        DateTimeOffset? savedAt = null;
+        var items = new List<InventoryItem>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            savedAt ??= new DateTimeOffset(reader.GetDateTime(0), TimeSpan.Zero);
+            if (!reader.IsDBNull(1))
+            {
+                items.Add(new InventoryItem(reader.GetString(1), reader.GetInt32(2)));
+            }
+        }
+
+        return savedAt is null
+            ? null
+            : new CharacterInventorySnapshot(characterId, items, savedAt.Value);
+    }
+
+    public async ValueTask<bool> SaveAsync(
+        CharacterInventorySnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var version = connection.CreateCommand();
+        version.Transaction = transaction;
+        version.CommandText = """
+            INSERT INTO character_inventory_state (character_id, saved_at)
+            VALUES ($1, $2)
+            ON CONFLICT (character_id) DO UPDATE
+            SET saved_at = EXCLUDED.saved_at
+            WHERE character_inventory_state.saved_at <= EXCLUDED.saved_at
+            RETURNING character_id
+            """;
+        version.Parameters.AddWithValue(snapshot.CharacterId);
+        version.Parameters.AddWithValue(snapshot.SavedAt.UtcDateTime);
+        if (await version.ExecuteScalarAsync(cancellationToken) is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+
+        await using (var delete = connection.CreateCommand())
+        {
+            delete.Transaction = transaction;
+            delete.CommandText = "DELETE FROM character_inventory_items WHERE character_id = $1";
+            delete.Parameters.AddWithValue(snapshot.CharacterId);
+            await delete.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        foreach (var item in snapshot.Items)
+        {
+            await using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT INTO character_inventory_items (character_id, item_id, quantity)
+                VALUES ($1, $2, $3)
+                """;
+            insert.Parameters.AddWithValue(snapshot.CharacterId);
+            insert.Parameters.AddWithValue(item.ItemId);
+            insert.Parameters.AddWithValue(item.Quantity);
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return true;
     }
 
     private static GameCharacter ReadCharacter(NpgsqlDataReader reader) =>

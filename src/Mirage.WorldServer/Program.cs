@@ -37,12 +37,17 @@ var postgresConnectionString = builder.Configuration.GetConnectionString("Postgr
 if (string.IsNullOrWhiteSpace(postgresConnectionString))
 {
     builder.Services.AddSingleton<ICharacterWorldStateStore, InMemoryCharacterWorldStateStore>();
+    builder.Services.AddSingleton<ICharacterInventoryStore, InMemoryCharacterInventoryStore>();
 }
 else
 {
     var dataSource = PostgresStorage.CreateDataSource(postgresConnectionString);
     builder.Services.AddSingleton(dataSource);
-    builder.Services.AddSingleton<ICharacterWorldStateStore, PostgresCharacterRepository>();
+    builder.Services.AddSingleton<PostgresCharacterRepository>();
+    builder.Services.AddSingleton<ICharacterWorldStateStore>(services =>
+        services.GetRequiredService<PostgresCharacterRepository>());
+    builder.Services.AddSingleton<ICharacterInventoryStore>(services =>
+        services.GetRequiredService<PostgresCharacterRepository>());
 }
 
 var ticketProtector = CreateTicketProtector(builder.Configuration);
