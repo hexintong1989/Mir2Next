@@ -197,6 +197,8 @@ public sealed class WorldInstance
     public const int ManaRegenerationIntervalTicks = 20;
     public const int ChatCooldownTicks = 20;
     public const int MaximumChatLength = 120;
+    public const int MaximumPartyMembers = 5;
+    public const int PartyInviteLifetimeTicks = 600;
     private readonly object _gate = new();
     private readonly Dictionary<Guid, WorldPlayer> _players = [];
     private readonly Dictionary<Guid, WorldMonster> _monsters = [];
@@ -207,6 +209,9 @@ public sealed class WorldInstance
     private readonly Dictionary<(Guid CharacterId, string SkillId), long> _skillLastCastTicks = [];
     private readonly Dictionary<Guid, long> _chatLastSentTicks = [];
     private readonly Dictionary<Guid, GridPosition> _playerSpawns = [];
+    private readonly Dictionary<Guid, WorldPartyState> _parties = [];
+    private readonly Dictionary<Guid, Guid> _partyByCharacter = [];
+    private readonly Dictionary<Guid, PartyInvitation> _partyInvitations = [];
     private readonly HashSet<GridPosition> _occupiedPositions = [];
     private long _nextDropSequence;
 
@@ -774,7 +779,183 @@ public sealed class WorldInstance
             {
                 _skillLastCastTicks.Remove(key);
             }
+            RemoveFromParty(characterId);
+            _partyInvitations.Remove(characterId);
+            foreach (var targetId in _partyInvitations
+                         .Where(value => value.Value.InviterCharacterId == characterId)
+                         .Select(value => value.Key)
+                         .ToArray())
+            {
+                _partyInvitations.Remove(targetId);
+            }
             return true;
+        }
+    }
+
+    public PartyInviteResult InviteToParty(
+        Guid characterId,
+        long sequence,
+        Guid targetCharacterId,
+        long currentTick)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(currentTick);
+        lock (_gate)
+        {
+            if (!TryBeginPartyCommand(characterId, sequence, out var player, out var failure))
+            {
+                return new PartyInviteResult(failure, player, targetCharacterId, 0);
+            }
+
+            PartyInviteResult Reject(PartyFailure reason) =>
+                new(reason, player, targetCharacterId, 0);
+
+            if (targetCharacterId == characterId)
+            {
+                return Reject(PartyFailure.InvalidTarget);
+            }
+
+            if (!_players.ContainsKey(targetCharacterId))
+            {
+                return Reject(PartyFailure.TargetNotFound);
+            }
+
+            if (_partyByCharacter.ContainsKey(targetCharacterId))
+            {
+                return Reject(PartyFailure.TargetAlreadyInParty);
+            }
+
+            if (_partyByCharacter.TryGetValue(characterId, out var partyId))
+            {
+                var party = _parties[partyId];
+                if (party.LeaderCharacterId != characterId)
+                {
+                    return Reject(PartyFailure.NotLeader);
+                }
+
+                if (party.MemberCharacterIds.Count >= MaximumPartyMembers)
+                {
+                    return Reject(PartyFailure.PartyFull);
+                }
+            }
+
+            if (_partyInvitations.TryGetValue(targetCharacterId, out var pending)
+                && pending.ExpiresAtTick > currentTick
+                && pending.InviterCharacterId != characterId)
+            {
+                return Reject(PartyFailure.InvitePending);
+            }
+
+            var expiresAtTick = currentTick + PartyInviteLifetimeTicks;
+            _partyInvitations[targetCharacterId] = new PartyInvitation(
+                characterId,
+                targetCharacterId,
+                expiresAtTick);
+            return new PartyInviteResult(
+                PartyFailure.None,
+                player,
+                targetCharacterId,
+                expiresAtTick);
+        }
+    }
+
+    public PartyChangeResult AcceptPartyInvite(
+        Guid characterId,
+        long sequence,
+        Guid inviterCharacterId,
+        long currentTick)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(currentTick);
+        lock (_gate)
+        {
+            if (!TryBeginPartyCommand(characterId, sequence, out var player, out var failure))
+            {
+                return new PartyChangeResult(failure, player, null, []);
+            }
+
+            PartyChangeResult Reject(PartyFailure reason) => new(reason, player, null, []);
+            if (_partyByCharacter.ContainsKey(characterId))
+            {
+                return Reject(PartyFailure.AlreadyInParty);
+            }
+
+            if (!_partyInvitations.TryGetValue(characterId, out var invitation)
+                || invitation.InviterCharacterId != inviterCharacterId)
+            {
+                return Reject(PartyFailure.InviteNotFound);
+            }
+
+            if (invitation.ExpiresAtTick <= currentTick)
+            {
+                _partyInvitations.Remove(characterId);
+                return Reject(PartyFailure.InviteExpired);
+            }
+
+            if (!_players.ContainsKey(inviterCharacterId))
+            {
+                _partyInvitations.Remove(characterId);
+                return Reject(PartyFailure.TargetNotFound);
+            }
+
+            WorldPartyState party;
+            if (_partyByCharacter.TryGetValue(inviterCharacterId, out var partyId))
+            {
+                party = _parties[partyId];
+                if (party.LeaderCharacterId != inviterCharacterId)
+                {
+                    return Reject(PartyFailure.NotLeader);
+                }
+
+                if (party.MemberCharacterIds.Count >= MaximumPartyMembers)
+                {
+                    return Reject(PartyFailure.PartyFull);
+                }
+            }
+            else
+            {
+                party = new WorldPartyState(Guid.NewGuid(), inviterCharacterId, [inviterCharacterId]);
+                _parties.Add(party.PartyId, party);
+                _partyByCharacter.Add(inviterCharacterId, party.PartyId);
+            }
+
+            party.MemberCharacterIds.Add(characterId);
+            _partyByCharacter.Add(characterId, party.PartyId);
+            _partyInvitations.Remove(characterId);
+            var snapshot = ToPartySnapshot(party);
+            return new PartyChangeResult(
+                PartyFailure.None,
+                player,
+                snapshot,
+                snapshot.MemberCharacterIds);
+        }
+    }
+
+    public PartyChangeResult LeaveParty(Guid characterId, long sequence)
+    {
+        lock (_gate)
+        {
+            if (!TryBeginPartyCommand(characterId, sequence, out var player, out var failure))
+            {
+                return new PartyChangeResult(failure, player, null, []);
+            }
+
+            if (!_partyByCharacter.TryGetValue(characterId, out var partyId))
+            {
+                return new PartyChangeResult(PartyFailure.NotInParty, player, null, []);
+            }
+
+            var affected = _parties[partyId].MemberCharacterIds.ToArray();
+            var remaining = RemoveFromParty(characterId);
+            return new PartyChangeResult(PartyFailure.None, player, remaining, affected);
+        }
+    }
+
+    public PartySnapshot? PartyFor(Guid characterId)
+    {
+        lock (_gate)
+        {
+            return _partyByCharacter.TryGetValue(characterId, out var partyId)
+                ? ToPartySnapshot(_parties[partyId])
+                : null;
         }
     }
 
@@ -1013,6 +1194,14 @@ public sealed class WorldInstance
         lock (_gate)
         {
             var changes = 0;
+            foreach (var targetId in _partyInvitations
+                         .Where(value => value.Value.ExpiresAtTick <= currentTick)
+                         .Select(value => value.Key)
+                         .ToArray())
+            {
+                _partyInvitations.Remove(targetId);
+                changes++;
+            }
             foreach (var expiredDrop in _groundDrops.Values
                          .Where(drop => drop.ExpiresAtTick <= currentTick)
                          .Select(drop => drop.DropId)
@@ -1264,6 +1453,61 @@ public sealed class WorldInstance
         return true;
     }
 
+    private bool TryBeginPartyCommand(
+        Guid characterId,
+        long sequence,
+        out WorldPlayer player,
+        out PartyFailure failure)
+    {
+        if (!_players.TryGetValue(characterId, out player!))
+        {
+            player = new WorldPlayer(characterId, default, 0);
+            failure = PartyFailure.PlayerNotFound;
+            return false;
+        }
+
+        if (sequence <= player.LastProcessedSequence)
+        {
+            failure = PartyFailure.StaleSequence;
+            return false;
+        }
+
+        player = player with { LastProcessedSequence = sequence };
+        _players[characterId] = player;
+        failure = PartyFailure.None;
+        return true;
+    }
+
+    private PartySnapshot? RemoveFromParty(Guid characterId)
+    {
+        if (!_partyByCharacter.Remove(characterId, out var partyId))
+        {
+            return null;
+        }
+
+        var party = _parties[partyId];
+        party.MemberCharacterIds.Remove(characterId);
+        if (party.MemberCharacterIds.Count < 2)
+        {
+            _parties.Remove(partyId);
+            foreach (var memberId in party.MemberCharacterIds)
+            {
+                _partyByCharacter.Remove(memberId);
+            }
+            return null;
+        }
+
+        if (party.LeaderCharacterId == characterId)
+        {
+            party.LeaderCharacterId = party.MemberCharacterIds[0];
+        }
+
+        return ToPartySnapshot(party);
+    }
+
+    private static PartySnapshot ToPartySnapshot(WorldPartyState party) =>
+        new(party.PartyId, party.LeaderCharacterId, party.MemberCharacterIds.ToArray());
+
     private EquipmentResult EquipmentFailureResult(EquipmentFailure failure, WorldPlayer player) =>
         new(
             failure,
@@ -1363,4 +1607,19 @@ public sealed class WorldInstance
         int MaximumHealth,
         string DropItemId,
         long? RespawnAtTick);
+
+    private sealed class WorldPartyState(
+        Guid partyId,
+        Guid leaderCharacterId,
+        List<Guid> memberCharacterIds)
+    {
+        public Guid PartyId { get; } = partyId;
+        public Guid LeaderCharacterId { get; set; } = leaderCharacterId;
+        public List<Guid> MemberCharacterIds { get; } = memberCharacterIds;
+    }
+
+    private sealed record PartyInvitation(
+        Guid InviterCharacterId,
+        Guid TargetCharacterId,
+        long ExpiresAtTick);
 }

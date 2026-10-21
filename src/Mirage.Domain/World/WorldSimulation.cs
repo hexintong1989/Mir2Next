@@ -129,6 +129,46 @@ public sealed class WorldSimulation
         return await completion.Task.WaitAsync(cancellationToken);
     }
 
+    public async ValueTask<PartyInviteResult> QueuePartyInviteAsync(
+        Guid characterId,
+        long sequence,
+        Guid targetCharacterId,
+        CancellationToken cancellationToken = default)
+    {
+        var completion = new TaskCompletionSource<PartyInviteResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var command = new PartyInviteCommand(
+            characterId, sequence, targetCharacterId, completion, cancellationToken);
+        await _commands.Writer.WriteAsync(command, cancellationToken);
+        return await completion.Task.WaitAsync(cancellationToken);
+    }
+
+    public async ValueTask<PartyChangeResult> QueuePartyAcceptAsync(
+        Guid characterId,
+        long sequence,
+        Guid inviterCharacterId,
+        CancellationToken cancellationToken = default)
+    {
+        var completion = new TaskCompletionSource<PartyChangeResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var command = new PartyAcceptCommand(
+            characterId, sequence, inviterCharacterId, completion, cancellationToken);
+        await _commands.Writer.WriteAsync(command, cancellationToken);
+        return await completion.Task.WaitAsync(cancellationToken);
+    }
+
+    public async ValueTask<PartyChangeResult> QueuePartyLeaveAsync(
+        Guid characterId,
+        long sequence,
+        CancellationToken cancellationToken = default)
+    {
+        var completion = new TaskCompletionSource<PartyChangeResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var command = new PartyLeaveCommand(characterId, sequence, completion, cancellationToken);
+        await _commands.Writer.WriteAsync(command, cancellationToken);
+        return await completion.Task.WaitAsync(cancellationToken);
+    }
+
     public int Tick(int maximumCommands = 1024)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumCommands);
@@ -260,6 +300,46 @@ public sealed class WorldSimulation
     {
         public void Execute(WorldInstance world, long currentTick) =>
             Completion.TrySetResult(world.Unequip(CharacterId, Sequence, Slot));
+
+        public void Cancel() => Completion.TrySetCanceled(CancellationToken);
+    }
+
+    private sealed record PartyInviteCommand(
+        Guid CharacterId,
+        long Sequence,
+        Guid TargetCharacterId,
+        TaskCompletionSource<PartyInviteResult> Completion,
+        CancellationToken CancellationToken) : IWorldCommand
+    {
+        public void Execute(WorldInstance world, long currentTick) =>
+            Completion.TrySetResult(world.InviteToParty(
+                CharacterId, Sequence, TargetCharacterId, currentTick));
+
+        public void Cancel() => Completion.TrySetCanceled(CancellationToken);
+    }
+
+    private sealed record PartyAcceptCommand(
+        Guid CharacterId,
+        long Sequence,
+        Guid InviterCharacterId,
+        TaskCompletionSource<PartyChangeResult> Completion,
+        CancellationToken CancellationToken) : IWorldCommand
+    {
+        public void Execute(WorldInstance world, long currentTick) =>
+            Completion.TrySetResult(world.AcceptPartyInvite(
+                CharacterId, Sequence, InviterCharacterId, currentTick));
+
+        public void Cancel() => Completion.TrySetCanceled(CancellationToken);
+    }
+
+    private sealed record PartyLeaveCommand(
+        Guid CharacterId,
+        long Sequence,
+        TaskCompletionSource<PartyChangeResult> Completion,
+        CancellationToken CancellationToken) : IWorldCommand
+    {
+        public void Execute(WorldInstance world, long currentTick) =>
+            Completion.TrySetResult(world.LeaveParty(CharacterId, Sequence));
 
         public void Cancel() => Completion.TrySetCanceled(CancellationToken);
     }

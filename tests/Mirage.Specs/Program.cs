@@ -46,6 +46,8 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("主动技能按职业距离法力冷却和序号结算", SkillValidatesAuthorityAndResources),
     ("技能进入世界帧并在固定帧恢复法力", SkillExecutesOnWorldTickAndManaRegenerates),
     ("聊天在世界帧校验内容频率和序号", ChatValidatesContentRateAndSequence),
+    ("组队邀请与接受必须经过世界帧", PartyInviteAndAcceptExecuteOnWorldTick),
+    ("组队校验队长人数过期并在离队时转移队长", PartyRulesAndLeaderTransferAreAuthoritative),
     ("消耗品扣除背包并恢复受上限约束的资源", ConsumablesRestoreResourcesWithoutDuplication),
     ("物品与资源同版本保存且旧快照不可覆盖", CombinedCharacterStateIsVersioned),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
@@ -772,6 +774,75 @@ static async Task ChatValidatesContentRateAndSequence()
         "控制字符应被拒绝");
     Require(world.Chat(sender, 5, "再次发言", 21).IsSuccess,
         "冷却结束后可以继续发送合法消息");
+}
+
+static async Task PartyInviteAndAcceptExecuteOnWorldTick()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var inviter = Guid.NewGuid();
+    var target = Guid.NewGuid();
+    world.Join(inviter, new GridPosition(1, 1));
+    world.Join(target, new GridPosition(3, 1));
+    var simulation = new WorldSimulation(world);
+
+    var pendingInvite = simulation.QueuePartyInviteAsync(inviter, 1, target).AsTask();
+    Require(!pendingInvite.IsCompleted, "组队邀请不能绕过世界帧");
+    simulation.Tick();
+    var invite = await pendingInvite;
+    Require(invite.IsSuccess && invite.ExpiresAtTick == 1 + WorldInstance.PartyInviteLifetimeTicks,
+        "邀请应在世界帧签发并带权威过期帧");
+
+    var pendingAccept = simulation.QueuePartyAcceptAsync(target, 1, inviter).AsTask();
+    Require(!pendingAccept.IsCompleted, "接受邀请不能绕过世界帧");
+    simulation.Tick();
+    var accepted = await pendingAccept;
+    Require(accepted.IsSuccess && accepted.Party?.LeaderCharacterId == inviter,
+        "接受后邀请者应成为队长");
+    Require(accepted.Party?.MemberCharacterIds.SequenceEqual([inviter, target]) == true,
+        "新队伍应按加入顺序包含双方");
+}
+
+static Task PartyRulesAndLeaderTransferAreAuthoritative()
+{
+    var world = new WorldInstance("test", 20, 20);
+    var leader = Guid.NewGuid();
+    world.Join(leader, new GridPosition(1, 1));
+    var members = Enumerable.Range(0, 4).Select(_ => Guid.NewGuid()).ToArray();
+    for (var index = 0; index < members.Length; index++)
+    {
+        world.Join(members[index], new GridPosition(3 + index * 2, 1));
+        Require(world.InviteToParty(leader, index + 1, members[index], index + 1).IsSuccess,
+            "队长在人数上限内应能邀请");
+        Require(world.AcceptPartyInvite(members[index], 1, leader, index + 1).IsSuccess,
+            "有效邀请应能接受");
+    }
+
+    var overflow = Guid.NewGuid();
+    world.Join(overflow, new GridPosition(12, 1));
+    Require(world.InviteToParty(leader, 5, overflow, 10).Failure == PartyFailure.PartyFull,
+        "五人队伍必须拒绝继续邀请");
+    Require(world.InviteToParty(members[0], 2, overflow, 10).Failure == PartyFailure.NotLeader,
+        "普通成员不能代表队伍邀请");
+
+    var expiredTarget = Guid.NewGuid();
+    var separateInviter = Guid.NewGuid();
+    world.Join(separateInviter, new GridPosition(14, 1));
+    world.Join(expiredTarget, new GridPosition(16, 1));
+    var issued = world.InviteToParty(separateInviter, 1, expiredTarget, 20);
+    Require(issued.IsSuccess, "独立玩家应能发出邀请");
+    Require(world.AcceptPartyInvite(
+            expiredTarget, 1, separateInviter, issued.ExpiresAtTick).Failure == PartyFailure.InviteExpired,
+        "到达过期帧的邀请必须失效");
+
+    var affected = world.PartyFor(leader)!.MemberCharacterIds.ToArray();
+    var left = world.LeaveParty(leader, 6);
+    Require(left.IsSuccess && left.Party?.LeaderCharacterId == members[0],
+        "队长主动离队后应按加入顺序转移队长");
+    Require(left.AffectedCharacterIds.SequenceEqual(affected),
+        "离队结果应包含需要刷新状态的原队员");
+    Require(world.InviteToParty(leader, 6, overflow, 30).Failure == PartyFailure.StaleSequence,
+        "组队操作必须与其他角色指令共用单调序号");
+    return Task.CompletedTask;
 }
 
 static async Task ConsumablesRestoreResourcesWithoutDuplication()

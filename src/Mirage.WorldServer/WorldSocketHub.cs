@@ -127,12 +127,14 @@ public sealed class WorldSocketHub(
                 && _connections.TryRemove(characterId, out _))
             {
                 var departingPlayer = world.FindPlayer(characterId);
+                var affectedPartyMembers = world.PartyFor(characterId)?.MemberCharacterIds ?? [];
                 world.Leave(characterId);
                 if (departingPlayer is not null)
                 {
                     await TryPersistWorldStateAsync(departingPlayer, CancellationToken.None);
                     await TryPersistInventoryAsync(characterId, CancellationToken.None);
                 }
+                await BroadcastPartyStatesAsync(affectedPartyMembers, CancellationToken.None);
                 await RefreshVisibilityAsync(null, CancellationToken.None);
             }
         }
@@ -418,6 +420,74 @@ public sealed class WorldSocketHub(
                     slot,
                     cancellationToken);
                 await SendEquipmentResultAsync(connection, message.Sequence, equipment, cancellationToken);
+                continue;
+            }
+
+            if (string.Equals(message.Type, "partyInvite", StringComparison.Ordinal)
+                && message.TargetCharacterId != Guid.Empty)
+            {
+                var invite = await simulation.QueuePartyInviteAsync(
+                    connection.CharacterId,
+                    message.Sequence,
+                    message.TargetCharacterId,
+                    cancellationToken);
+                if (!invite.IsSuccess)
+                {
+                    await SendPartyRejectedAsync(
+                        connection, message.Sequence, "invite", invite.Failure, cancellationToken);
+                    continue;
+                }
+
+                await connection.SendAsync(new ServerEnvelope("partyInviteSent", new
+                {
+                    sequence = message.Sequence,
+                    targetCharacterId = invite.TargetCharacterId,
+                    expiresAtTick = invite.ExpiresAtTick
+                }), cancellationToken);
+                if (_connections.TryGetValue(invite.TargetCharacterId, out var targetConnection))
+                {
+                    await targetConnection.SendAsync(new ServerEnvelope("partyInvite", new
+                    {
+                        inviterCharacterId = connection.CharacterId,
+                        expiresAtTick = invite.ExpiresAtTick
+                    }), cancellationToken);
+                }
+                continue;
+            }
+
+            if (string.Equals(message.Type, "partyAccept", StringComparison.Ordinal)
+                && message.InviterCharacterId != Guid.Empty)
+            {
+                var accepted = await simulation.QueuePartyAcceptAsync(
+                    connection.CharacterId,
+                    message.Sequence,
+                    message.InviterCharacterId,
+                    cancellationToken);
+                if (!accepted.IsSuccess)
+                {
+                    await SendPartyRejectedAsync(
+                        connection, message.Sequence, "accept", accepted.Failure, cancellationToken);
+                    continue;
+                }
+
+                await BroadcastPartyStatesAsync(accepted.AffectedCharacterIds, cancellationToken);
+                continue;
+            }
+
+            if (string.Equals(message.Type, "partyLeave", StringComparison.Ordinal))
+            {
+                var left = await simulation.QueuePartyLeaveAsync(
+                    connection.CharacterId,
+                    message.Sequence,
+                    cancellationToken);
+                if (!left.IsSuccess)
+                {
+                    await SendPartyRejectedAsync(
+                        connection, message.Sequence, "leave", left.Failure, cancellationToken);
+                    continue;
+                }
+
+                await BroadcastPartyStatesAsync(left.AffectedCharacterIds, cancellationToken);
                 continue;
             }
 
@@ -725,6 +795,37 @@ public sealed class WorldSocketHub(
             player = ToPositionResponse(player)
         }), cancellationToken);
 
+    private static Task SendPartyRejectedAsync(
+        ClientConnection connection,
+        long sequence,
+        string operation,
+        PartyFailure failure,
+        CancellationToken cancellationToken) =>
+        connection.SendAsync(new ServerEnvelope("partyRejected", new
+        {
+            sequence,
+            operation,
+            code = failure.ToString()
+        }), cancellationToken);
+
+    private async Task BroadcastPartyStatesAsync(
+        IEnumerable<Guid> characterIds,
+        CancellationToken cancellationToken)
+    {
+        foreach (var characterId in characterIds.Distinct())
+        {
+            if (!_connections.TryGetValue(characterId, out var connection))
+            {
+                continue;
+            }
+
+            await connection.SendAsync(new ServerEnvelope("partyUpdated", new
+            {
+                party = world.PartyFor(characterId)
+            }), cancellationToken);
+        }
+    }
+
     private static PlayerPositionResponse ToPositionResponse(WorldPlayer player) =>
         new(
             player.CharacterId,
@@ -781,7 +882,9 @@ public sealed class WorldSocketHub(
         string? ItemId,
         string? Slot,
         string? SkillId,
-        string? Text);
+        string? Text,
+        Guid TargetCharacterId,
+        Guid InviterCharacterId);
     private sealed record ServerEnvelope(string Type, object Payload);
 
     private sealed class ClientConnection(Guid characterId, WebSocket socket)
