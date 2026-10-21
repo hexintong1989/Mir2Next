@@ -30,6 +30,7 @@ world.SpawnMonster(
 builder.Services.AddSingleton(world);
 builder.Services.AddSingleton<WorldSimulation>();
 builder.Services.AddHostedService<WorldTickService>();
+builder.Services.AddHostedService<WorldBroadcastService>();
 builder.Services.AddSingleton<WorldSocketHub>();
 builder.Services.AddSingleton<WorldEntryTicketReplayGuard>();
 
