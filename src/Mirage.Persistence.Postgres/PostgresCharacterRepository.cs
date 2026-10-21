@@ -254,9 +254,28 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
             }
         }
 
+        await reader.DisposeAsync();
+
+        const string equipmentSql = """
+            SELECT slot, item_id
+            FROM character_equipment
+            WHERE character_id = $1
+            ORDER BY slot
+            """;
+        await using var equipmentCommand = dataSource.CreateCommand(equipmentSql);
+        equipmentCommand.Parameters.AddWithValue(characterId);
+        await using var equipmentReader = await equipmentCommand.ExecuteReaderAsync(cancellationToken);
+        var equipment = new List<EquippedItem>();
+        while (await equipmentReader.ReadAsync(cancellationToken))
+        {
+            equipment.Add(new EquippedItem(
+                (EquipmentSlot)equipmentReader.GetInt16(0),
+                equipmentReader.GetString(1)));
+        }
+
         return savedAt is null
             ? null
-            : new CharacterInventorySnapshot(characterId, items, savedAt.Value);
+            : new CharacterInventorySnapshot(characterId, items, savedAt.Value, equipment);
     }
 
     public async ValueTask<bool> SaveAsync(
@@ -303,6 +322,28 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
             insert.Parameters.AddWithValue(item.ItemId);
             insert.Parameters.AddWithValue(item.Quantity);
             await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var deleteEquipment = connection.CreateCommand())
+        {
+            deleteEquipment.Transaction = transaction;
+            deleteEquipment.CommandText = "DELETE FROM character_equipment WHERE character_id = $1";
+            deleteEquipment.Parameters.AddWithValue(snapshot.CharacterId);
+            await deleteEquipment.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        foreach (var item in snapshot.Equipment ?? [])
+        {
+            await using var insertEquipment = connection.CreateCommand();
+            insertEquipment.Transaction = transaction;
+            insertEquipment.CommandText = """
+                INSERT INTO character_equipment (character_id, slot, item_id)
+                VALUES ($1, $2, $3)
+                """;
+            insertEquipment.Parameters.AddWithValue(snapshot.CharacterId);
+            insertEquipment.Parameters.AddWithValue((short)item.Slot);
+            insertEquipment.Parameters.AddWithValue(item.ItemId);
+            await insertEquipment.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);

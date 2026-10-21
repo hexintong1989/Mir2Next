@@ -10,6 +10,10 @@ public sealed record AttackRequest(long Sequence, Guid MonsterId);
 
 public sealed record PickupRequest(long Sequence, Guid DropId);
 
+public sealed record EquipItemRequest(long Sequence, string? ItemId);
+
+public sealed record UnequipItemRequest(long Sequence, string? Slot);
+
 public sealed record SpawnMonsterRequest(
     Guid MonsterId,
     string TemplateId,
@@ -64,6 +68,8 @@ public sealed record GroundDropResponse(
     long ExpiresAtTick);
 
 public sealed record InventoryItemResponse(string ItemId, int Quantity);
+
+public sealed record EquippedItemResponse(string Slot, string ItemId);
 
 public sealed record PickupResponse(
     bool Accepted,

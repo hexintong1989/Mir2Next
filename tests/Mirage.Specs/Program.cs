@@ -38,6 +38,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("四职业拥有不同的基础战斗属性", ArchetypesHaveDistinctCombatProfiles),
     ("装备会从背包转移并增加权威属性", EquipmentMovesFromInventoryAndAddsStats),
     ("装备与卸下指令都在世界帧执行", EquipmentCommandsExecuteOnWorldTick),
+    ("装备随背包快照保存并在加载时重算属性", EquipmentPersistsWithInventorySnapshot),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -540,6 +541,28 @@ static async Task EquipmentCommandsExecuteOnWorldTick()
     simulation.Tick();
     Require((await unequip).IsSuccess, "世界帧应完成卸下");
     Require(world.InventorySnapshot(characterId).Single().ItemId == "wooden_token", "卸下物品应回到背包");
+}
+
+static async Task EquipmentPersistsWithInventorySnapshot()
+{
+    var store = new InMemoryCharacterInventoryStore();
+    var characterId = Guid.NewGuid();
+    var savedAt = new DateTimeOffset(2026, 10, 21, 3, 0, 0, TimeSpan.Zero);
+    await store.SaveAsync(
+        new CharacterInventorySnapshot(
+            characterId,
+            [new InventoryItem("venison", 2)],
+            savedAt,
+            [new EquippedItem(EquipmentSlot.Weapon, "wooden_sword")]),
+        CancellationToken.None);
+    var snapshot = await store.LoadAsync(characterId, CancellationToken.None);
+    var world = new WorldInstance("test", 10, 10);
+    world.Join(characterId, new GridPosition(1, 1));
+    world.ReplaceInventory(characterId, snapshot!.Items);
+    world.ReplaceEquipment(characterId, snapshot.Equipment ?? []);
+
+    Require(world.EquipmentSnapshot(characterId).Single().ItemId == "wooden_sword", "应恢复武器槽");
+    Require(world.FindPlayer(characterId)!.AttackPower == 15, "加载装备后应重算攻击属性");
 }
 
 static async Task CharacterOwnershipIsEnforced()

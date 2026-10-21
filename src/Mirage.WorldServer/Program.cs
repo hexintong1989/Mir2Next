@@ -224,11 +224,56 @@ if (app.Environment.IsDevelopment())
                 : new InventoryItemResponse(result.InventoryItem.ItemId, result.InventoryItem.Quantity)));
     });
 
+    app.MapPost("/internal/dev/players/{characterId:guid}/equip", async (
+        Guid characterId,
+        EquipItemRequest request,
+        WorldSimulation simulation,
+        CancellationToken cancellationToken) =>
+    {
+        if (string.IsNullOrWhiteSpace(request.ItemId))
+        {
+            return Results.BadRequest(new { code = "InvalidItemId" });
+        }
+
+        var result = await simulation.QueueEquipAsync(
+            characterId,
+            request.Sequence,
+            request.ItemId,
+            cancellationToken);
+        return Results.Ok(ToEquipmentResponse(result));
+    });
+
+    app.MapPost("/internal/dev/players/{characterId:guid}/unequip", async (
+        Guid characterId,
+        UnequipItemRequest request,
+        WorldSimulation simulation,
+        CancellationToken cancellationToken) =>
+    {
+        if (!Enum.TryParse<EquipmentSlot>(request.Slot, true, out var slot)
+            || !Enum.IsDefined(slot))
+        {
+            return Results.BadRequest(new { code = "InvalidEquipmentSlot" });
+        }
+
+        var result = await simulation.QueueUnequipAsync(
+            characterId,
+            request.Sequence,
+            slot,
+            cancellationToken);
+        return Results.Ok(ToEquipmentResponse(result));
+    });
+
     app.MapGet("/internal/dev/players/{characterId:guid}/inventory", (
         Guid characterId,
         WorldInstance world) =>
         Results.Ok(world.InventorySnapshot(characterId)
             .Select(item => new InventoryItemResponse(item.ItemId, item.Quantity))));
+
+    app.MapGet("/internal/dev/players/{characterId:guid}/equipment", (
+        Guid characterId,
+        WorldInstance world) =>
+        Results.Ok(world.EquipmentSnapshot(characterId)
+            .Select(item => new EquippedItemResponse(item.Slot.ToString(), item.ItemId))));
 
     app.MapGet("/internal/dev/drops", (WorldInstance world) =>
         Results.Ok(world.DropSnapshot().Select(ToDropResponse)));
@@ -312,6 +357,17 @@ static GroundDropResponse ToDropResponse(WorldDrop drop) =>
         drop.OwnerCharacterId,
         drop.OwnerProtectionUntilTick,
         drop.ExpiresAtTick);
+
+static object ToEquipmentResponse(EquipmentResult result) => new
+{
+    accepted = result.IsSuccess,
+    rejection = result.IsSuccess ? null : result.Failure.ToString(),
+    player = ToPositionResponse(result.Player),
+    inventory = result.Inventory.Select(item =>
+        new InventoryItemResponse(item.ItemId, item.Quantity)),
+    equipment = result.Equipment.Select(item =>
+        new EquippedItemResponse(item.Slot.ToString(), item.ItemId))
+};
 
 static HmacWorldEntryTicketProtector? CreateTicketProtector(IConfiguration configuration)
 {

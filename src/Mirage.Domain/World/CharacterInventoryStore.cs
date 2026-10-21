@@ -3,7 +3,8 @@ namespace Mirage.Domain.World;
 public sealed record CharacterInventorySnapshot(
     Guid CharacterId,
     IReadOnlyList<InventoryItem> Items,
-    DateTimeOffset SavedAt);
+    DateTimeOffset SavedAt,
+    IReadOnlyList<EquippedItem>? Equipment = null);
 
 public interface ICharacterInventoryStore
 {
@@ -52,5 +53,9 @@ public sealed class InMemoryCharacterInventoryStore : ICharacterInventoryStore
     }
 
     private static CharacterInventorySnapshot Clone(CharacterInventorySnapshot snapshot) =>
-        snapshot with { Items = snapshot.Items.ToArray() };
+        snapshot with
+        {
+            Items = snapshot.Items.ToArray(),
+            Equipment = (snapshot.Equipment ?? []).ToArray()
+        };
 }

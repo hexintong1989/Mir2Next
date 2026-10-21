@@ -56,6 +56,7 @@ public sealed class WorldSocketHub(
         {
             var inventory = await inventories.LoadAsync(characterId, cancellationToken);
             world.ReplaceInventory(characterId, inventory?.Items ?? []);
+            world.ReplaceEquipment(characterId, inventory?.Equipment ?? []);
             await connection.SendAsync(new ServerEnvelope(
                 "welcome",
                 new
@@ -68,6 +69,7 @@ public sealed class WorldSocketHub(
             await SendMonsterSnapshotAsync(connection, cancellationToken);
             await SendDropSnapshotAsync(connection, cancellationToken);
             await SendInventorySnapshotAsync(connection, cancellationToken);
+            await SendEquipmentSnapshotAsync(connection, cancellationToken);
             await ReceiveLoopAsync(connection, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -251,6 +253,31 @@ public sealed class WorldSocketHub(
                 continue;
             }
 
+            if (string.Equals(message.Type, "equip", StringComparison.Ordinal)
+                && !string.IsNullOrWhiteSpace(message.ItemId))
+            {
+                var equipment = await simulation.QueueEquipAsync(
+                    connection.CharacterId,
+                    message.Sequence,
+                    message.ItemId,
+                    cancellationToken);
+                await SendEquipmentResultAsync(connection, message.Sequence, equipment, cancellationToken);
+                continue;
+            }
+
+            if (string.Equals(message.Type, "unequip", StringComparison.Ordinal)
+                && Enum.TryParse<EquipmentSlot>(message.Slot, true, out var slot)
+                && Enum.IsDefined(slot))
+            {
+                var equipment = await simulation.QueueUnequipAsync(
+                    connection.CharacterId,
+                    message.Sequence,
+                    slot,
+                    cancellationToken);
+                await SendEquipmentResultAsync(connection, message.Sequence, equipment, cancellationToken);
+                continue;
+            }
+
             await connection.SendAsync(
                 new ServerEnvelope("protocolError", new { code = "UnknownMessageType" }),
                 cancellationToken);
@@ -305,6 +332,51 @@ public sealed class WorldSocketHub(
                         .Select(item => new InventoryItemResponse(item.ItemId, item.Quantity))
                 }),
             cancellationToken);
+
+    private Task SendEquipmentSnapshotAsync(
+        ClientConnection connection,
+        CancellationToken cancellationToken) =>
+        connection.SendAsync(
+            new ServerEnvelope(
+                "equipmentSnapshot",
+                new
+                {
+                    items = world.EquipmentSnapshot(connection.CharacterId)
+                        .Select(ToEquippedItemResponse)
+                }),
+            cancellationToken);
+
+    private async Task SendEquipmentResultAsync(
+        ClientConnection connection,
+        long sequence,
+        EquipmentResult result,
+        CancellationToken cancellationToken)
+    {
+        if (!result.IsSuccess)
+        {
+            await connection.SendAsync(
+                new ServerEnvelope("equipmentRejected", new
+                {
+                    sequence,
+                    code = result.Failure.ToString()
+                }),
+                cancellationToken);
+            return;
+        }
+
+        await TryPersistInventoryAsync(connection.CharacterId, cancellationToken);
+        await connection.SendAsync(
+            new ServerEnvelope("equipmentChanged", new
+            {
+                sequence,
+                player = ToPositionResponse(result.Player),
+                inventory = result.Inventory.Select(item =>
+                    new InventoryItemResponse(item.ItemId, item.Quantity)),
+                equipment = result.Equipment.Select(ToEquippedItemResponse)
+            }),
+            cancellationToken);
+        await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
+    }
 
     private async Task BroadcastDropSnapshotAsync(CancellationToken cancellationToken)
     {
@@ -381,7 +453,8 @@ public sealed class WorldSocketHub(
                 new CharacterInventorySnapshot(
                     characterId,
                     world.InventorySnapshot(characterId),
-                    DateTimeOffset.UtcNow),
+                    DateTimeOffset.UtcNow,
+                    world.EquipmentSnapshot(characterId)),
                 cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -461,13 +534,18 @@ public sealed class WorldSocketHub(
             drop.OwnerProtectionUntilTick,
             drop.ExpiresAtTick);
 
+    private static EquippedItemResponse ToEquippedItemResponse(EquippedItem item) =>
+        new(item.Slot.ToString(), item.ItemId);
+
     private sealed record ClientEnvelope(
         string? Type,
         long Sequence,
         int X,
         int Y,
         Guid MonsterId,
-        Guid DropId);
+        Guid DropId,
+        string? ItemId,
+        string? Slot);
     private sealed record ServerEnvelope(string Type, object Payload);
 
     private sealed class ClientConnection(Guid characterId, WebSocket socket)

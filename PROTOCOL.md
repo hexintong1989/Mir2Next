@@ -22,6 +22,11 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 {"type":"pickup","sequence":3,"dropId":"00000000-0000-0000-0000-000000000001"}
 ```
 
+```json
+{"type":"equip","sequence":4,"itemId":"wooden_token"}
+{"type":"unequip","sequence":5,"slot":"Accessory"}
+```
+
 `sequence` 由移动与攻击共用，对每个角色必须单调递增。基础攻击由服务端检查目标存在、近战距离、10帧冷却并结算伤害。消息必须是 UTF-8 JSON 文本且不超过 4096 字节。
 
 ## 服务端消息
@@ -35,6 +40,8 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 - `dropSnapshot`：视野内地面物品、击杀者保护截止帧及物品过期帧。
 - `inventorySnapshot`：角色进入世界时的服务端背包快照。
 - `pickupResult` / `pickupRejected`：拾取后的堆叠数量或拒绝原因。
+- `equipmentSnapshot`：进入世界时的武器、防具和饰品槽快照。
+- `equipmentChanged` / `equipmentRejected`：装备变更后的权威属性、背包和槽位，或拒绝原因。
 - `protocolError`：JSON、消息类型或帧类型错误。
 
 所有位置均以服务端状态为准。客户端只能发送移动意图，不得直接设置最终状态。

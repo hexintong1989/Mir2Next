@@ -672,6 +672,27 @@ public sealed class WorldInstance
         }
     }
 
+    public void ReplaceEquipment(Guid characterId, IReadOnlyList<EquippedItem> items)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        if (items.Count > Enum.GetValues<EquipmentSlot>().Length
+            || items.Select(item => item.Slot).Distinct().Count() != items.Count
+            || items.Any(item => !EquipmentCatalog.TryGet(item.ItemId, out var definition)
+                || definition.Slot != item.Slot))
+        {
+            throw new ArgumentException("Equipment snapshot is invalid.", nameof(items));
+        }
+
+        lock (_gate)
+        {
+            _equipment[characterId] = items.ToDictionary(item => item.Slot, item => item.ItemId);
+            if (_players.TryGetValue(characterId, out var player))
+            {
+                _players[characterId] = ApplyEquipmentStats(player);
+            }
+        }
+    }
+
     public int Advance(long currentTick)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(currentTick);
