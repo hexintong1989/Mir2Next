@@ -66,9 +66,13 @@ public sealed class WorldInstance
 {
     public const int BasicAttackDamage = 10;
     public const int BasicAttackCooldownTicks = 10;
+    public const int MonsterBehaviorIntervalTicks = 20;
+    public const int MonsterRespawnTicks = 100;
+    public const int MonsterAggroRadius = 8;
     private readonly object _gate = new();
     private readonly Dictionary<Guid, WorldPlayer> _players = [];
     private readonly Dictionary<Guid, WorldMonster> _monsters = [];
+    private readonly Dictionary<Guid, MonsterSpawn> _monsterSpawns = [];
     private readonly HashSet<GridPosition> _occupiedPositions = [];
 
     public WorldInstance(string mapId, int width, int height)
@@ -122,7 +126,7 @@ public sealed class WorldInstance
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumHealth);
         lock (_gate)
         {
-            if (_monsters.ContainsKey(monsterId)
+            if (_monsterSpawns.ContainsKey(monsterId)
                 || !Contains(position)
                 || _occupiedPositions.Contains(position))
             {
@@ -138,6 +142,15 @@ public sealed class WorldInstance
                     level,
                     maximumHealth,
                     maximumHealth));
+            _monsterSpawns.Add(
+                monsterId,
+                new MonsterSpawn(
+                    monsterId,
+                    templateId,
+                    position,
+                    level,
+                    maximumHealth,
+                    null));
             _occupiedPositions.Add(position);
             return true;
         }
@@ -289,6 +302,10 @@ public sealed class WorldInstance
             {
                 _monsters.Remove(monsterId);
                 _occupiedPositions.Remove(monster.Position);
+                _monsterSpawns[monsterId] = _monsterSpawns[monsterId] with
+                {
+                    RespawnAtTick = currentTick + MonsterRespawnTicks
+                };
             }
             else
             {
@@ -342,6 +359,74 @@ public sealed class WorldInstance
         }
     }
 
+    public int Advance(long currentTick)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(currentTick);
+        lock (_gate)
+        {
+            var changes = 0;
+            foreach (var spawn in _monsterSpawns.Values
+                         .Where(value => value.RespawnAtTick <= currentTick)
+                         .OrderBy(value => value.MonsterId)
+                         .ToArray())
+            {
+                if (_occupiedPositions.Contains(spawn.Position))
+                {
+                    continue;
+                }
+
+                _monsters[spawn.MonsterId] = new WorldMonster(
+                    spawn.MonsterId,
+                    spawn.TemplateId,
+                    spawn.Position,
+                    spawn.Level,
+                    spawn.MaximumHealth,
+                    spawn.MaximumHealth);
+                _occupiedPositions.Add(spawn.Position);
+                _monsterSpawns[spawn.MonsterId] = spawn with { RespawnAtTick = null };
+                changes++;
+            }
+
+            if (currentTick % MonsterBehaviorIntervalTicks != 0 || _players.Count == 0)
+            {
+                return changes;
+            }
+
+            foreach (var monster in _monsters.Values.OrderBy(value => value.MonsterId).ToArray())
+            {
+                var target = _players.Values
+                    .Select(player => new
+                    {
+                        Player = player,
+                        Distance = monster.Position.ChebyshevDistanceTo(player.Position)
+                    })
+                    .Where(value => value.Distance is > 1 and <= MonsterAggroRadius)
+                    .OrderBy(value => value.Distance)
+                    .ThenBy(value => value.Player.CharacterId)
+                    .FirstOrDefault();
+                if (target is null)
+                {
+                    continue;
+                }
+
+                var candidate = new GridPosition(
+                    monster.Position.X + Math.Sign(target.Player.Position.X - monster.Position.X),
+                    monster.Position.Y + Math.Sign(target.Player.Position.Y - monster.Position.Y));
+                if (!Contains(candidate) || _occupiedPositions.Contains(candidate))
+                {
+                    continue;
+                }
+
+                _occupiedPositions.Remove(monster.Position);
+                _occupiedPositions.Add(candidate);
+                _monsters[monster.MonsterId] = monster with { Position = candidate };
+                changes++;
+            }
+
+            return changes;
+        }
+    }
+
     public IReadOnlyList<WorldMonster> MonstersVisibleTo(Guid characterId, int radius)
     {
         if (radius is < 1 or > 64)
@@ -386,4 +471,12 @@ public sealed class WorldInstance
 
     private bool Contains(GridPosition position) =>
         position.X >= 0 && position.X < Width && position.Y >= 0 && position.Y < Height;
+
+    private sealed record MonsterSpawn(
+        Guid MonsterId,
+        string TemplateId,
+        GridPosition Position,
+        int Level,
+        int MaximumHealth,
+        long? RespawnAtTick);
 }

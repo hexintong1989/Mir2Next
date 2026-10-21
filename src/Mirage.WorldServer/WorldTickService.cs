@@ -4,6 +4,7 @@ namespace Mirage.WorldServer;
 
 public sealed class WorldTickService(
     WorldSimulation simulation,
+    WorldSocketHub socketHub,
     ILogger<WorldTickService> logger) : BackgroundService
 {
     private static readonly TimeSpan TickInterval = TimeSpan.FromMilliseconds(50);
@@ -18,6 +19,10 @@ public sealed class WorldTickService(
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
             simulation.Tick();
+            if (simulation.CurrentTick % WorldInstance.MonsterBehaviorIntervalTicks == 0)
+            {
+                await socketHub.BroadcastMonsterSnapshotsAsync(stoppingToken);
+            }
         }
     }
 }

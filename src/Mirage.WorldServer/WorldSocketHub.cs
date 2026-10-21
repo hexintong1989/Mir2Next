@@ -224,6 +224,14 @@ public sealed class WorldSocketHub(
                 }),
             cancellationToken);
 
+    public async Task BroadcastMonsterSnapshotsAsync(CancellationToken cancellationToken)
+    {
+        foreach (var connection in _connections.Values)
+        {
+            await SendMonsterSnapshotAsync(connection, cancellationToken);
+        }
+    }
+
     private async Task BroadcastMonsterUpdateAsync(
         AttackResult attack,
         CancellationToken cancellationToken)

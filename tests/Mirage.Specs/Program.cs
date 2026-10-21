@@ -27,6 +27,8 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("怪物占用格会阻挡玩家移动", MonsterPositionBlocksMovement),
     ("近战攻击由世界帧结算并能击杀怪物", MeleeAttackExecutesOnWorldTick),
     ("攻击会校验距离、冷却和消息序号", AttackValidatesRangeCooldownAndSequence),
+    ("怪物会在固定帧追踪附近玩家", MonsterMovesTowardNearbyPlayer),
+    ("死亡怪物会按固定帧刷新", DefeatedMonsterRespawns),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -321,6 +323,37 @@ static Task AttackValidatesRangeCooldownAndSequence()
     Require(cooldown.Failure == AttackFailure.Cooldown, "冷却期间应拒绝重复攻击");
     Require(stale.Failure == AttackFailure.StaleSequence, "旧序号攻击应被拒绝");
     Require(afterCooldown.IsSuccess, "冷却结束后应可再次攻击");
+    return Task.CompletedTask;
+}
+
+static Task MonsterMovesTowardNearbyPlayer()
+{
+    var world = new WorldInstance("test", 20, 20);
+    var characterId = Guid.NewGuid();
+    var monsterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(5, 5));
+    world.SpawnMonster(monsterId, "wolf", new GridPosition(10, 5), 1, 20);
+
+    Require(world.Advance(WorldInstance.MonsterBehaviorIntervalTicks) == 1, "行为帧应移动怪物");
+    Require(world.MonsterSnapshot().Single().Position == new GridPosition(9, 5), "怪物应向最近玩家移动一格");
+    return Task.CompletedTask;
+}
+
+static Task DefeatedMonsterRespawns()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    var monsterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(1, 1));
+    world.SpawnMonster(monsterId, "slime", new GridPosition(2, 1), 1, 10);
+    var defeated = world.Attack(characterId, 1, monsterId, 5);
+
+    Require(defeated.Defeated && world.MonsterCount == 0, "怪物应先进入死亡状态");
+    Require(world.Advance(104) == 0 && world.MonsterCount == 0, "刷新时间前不应复活");
+    Require(world.Advance(105) == 1, "刷新帧应重新生成怪物");
+    var respawned = world.MonsterSnapshot().Single();
+    Require(respawned.Health == respawned.MaximumHealth, "刷新怪物应恢复满血");
+    Require(respawned.Position == new GridPosition(2, 1), "刷新怪物应回到出生点");
     return Task.CompletedTask;
 }
 

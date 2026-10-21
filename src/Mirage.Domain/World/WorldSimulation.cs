@@ -68,6 +68,7 @@ public sealed class WorldSimulation
             processed++;
         }
 
+        _world.Advance(currentTick);
         return processed;
     }
 
