@@ -9,6 +9,10 @@ public enum AddCharacterOutcome
 
 public interface ICharacterWorldStateStore
 {
+    ValueTask<CharacterWorldState?> LoadWorldStateAsync(
+        Guid characterId,
+        CancellationToken cancellationToken);
+
     ValueTask<bool> SaveWorldStateAsync(
         CharacterWorldState state,
         CancellationToken cancellationToken);
@@ -166,7 +170,9 @@ public sealed class InMemoryCharacterRepository : ICharacterRepository
                     MapId = state.MapId,
                     PositionX = state.PositionX,
                     PositionY = state.PositionY,
-                    WorldStateSavedAt = state.SavedAt
+                    WorldStateSavedAt = state.SavedAt,
+                    Health = state.Health ?? current.Health,
+                    Mana = state.Mana ?? current.Mana
                 };
                 characters[index] = updated;
                 _charactersByName[updated.NormalizedName] = updated;
@@ -174,6 +180,23 @@ public sealed class InMemoryCharacterRepository : ICharacterRepository
             }
 
             return ValueTask.FromResult(false);
+        }
+    }
+
+    public ValueTask<CharacterWorldState?> LoadWorldStateAsync(
+        Guid characterId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            var character = _charactersByAccount.Values.SelectMany(characters => characters)
+                .FirstOrDefault(value => value.Id == characterId);
+            return ValueTask.FromResult(character?.WorldStateSavedAt is { } savedAt
+                ? new CharacterWorldState(character.Id, character.MapId,
+                    character.PositionX, character.PositionY, savedAt,
+                    character.Health, character.Mana)
+                : null);
         }
     }
 
@@ -221,6 +244,17 @@ public sealed class InMemoryCharacterWorldStateStore : ICharacterWorldStateStore
 {
     private readonly object _gate = new();
     private readonly Dictionary<Guid, CharacterWorldState> _states = [];
+
+    public ValueTask<CharacterWorldState?> LoadWorldStateAsync(
+        Guid characterId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            return ValueTask.FromResult(_states.GetValueOrDefault(characterId));
+        }
+    }
 
     public ValueTask<bool> SaveWorldStateAsync(
         CharacterWorldState state,

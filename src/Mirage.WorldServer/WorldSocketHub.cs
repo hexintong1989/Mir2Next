@@ -25,9 +25,25 @@ public sealed class WorldSocketHub(
         Guid characterId,
         GridPosition spawn,
         CharacterArchetype archetype,
+        int? health,
+        int? mana,
         bool findAvailableSpawn,
         CancellationToken cancellationToken)
     {
+        var latest = await worldStates.LoadWorldStateAsync(characterId, cancellationToken);
+        if (latest is not null && !string.Equals(latest.MapId, world.MapId, StringComparison.Ordinal))
+        {
+            context.Response.StatusCode = StatusCodes.Status409Conflict;
+            return;
+        }
+
+        if (latest is not null)
+        {
+            spawn = new GridPosition(latest.PositionX, latest.PositionY);
+            health = latest.Health ?? health;
+            mana = latest.Mana ?? mana;
+        }
+
         using var socket = await context.WebSockets.AcceptWebSocketAsync();
         var connection = new ClientConnection(characterId, socket);
         if (!_connections.TryAdd(characterId, connection))
@@ -57,6 +73,7 @@ public sealed class WorldSocketHub(
             var inventory = await inventories.LoadAsync(characterId, cancellationToken);
             world.ReplaceInventory(characterId, inventory?.Items ?? []);
             world.ReplaceEquipment(characterId, inventory?.Equipment ?? []);
+            world.RestoreResources(characterId, health, mana, simulation.CurrentTick);
             await connection.SendAsync(new ServerEnvelope(
                 "welcome",
                 new
@@ -515,7 +532,9 @@ public sealed class WorldSocketHub(
                     world.MapId,
                     player.Position.X,
                     player.Position.Y,
-                    DateTimeOffset.UtcNow),
+                    DateTimeOffset.UtcNow,
+                    player.Health,
+                    player.Mana),
                 cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

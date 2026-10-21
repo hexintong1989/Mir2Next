@@ -16,7 +16,9 @@ public sealed record WorldEntryTicketClaims(
     int PositionY,
     string Nonce,
     DateTimeOffset IssuedAt,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    int? Health = null,
+    int? Mana = null);
 
 public sealed record IssuedWorldEntryTicket(string Token, WorldEntryTicketClaims Claims);
 
@@ -63,7 +65,9 @@ public sealed class HmacWorldEntryTicketProtector
         string mapId = "local-field",
         int positionX = 64,
         int positionY = 64,
-        CharacterArchetype archetype = CharacterArchetype.Warrior)
+        CharacterArchetype archetype = CharacterArchetype.Warrior,
+        int? health = null,
+        int? mana = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(realmId);
         ArgumentException.ThrowIfNullOrWhiteSpace(mapId);
@@ -77,7 +81,9 @@ public sealed class HmacWorldEntryTicketProtector
             positionY,
             ToBase64Url(RandomNumberGenerator.GetBytes(16)),
             now,
-            now.Add(_lifetime));
+            now.Add(_lifetime),
+            health,
+            mana);
         var payload = JsonSerializer.SerializeToUtf8Bytes(claims, JsonOptions);
         var signature = HMACSHA256.HashData(_signingKey, payload);
         return new IssuedWorldEntryTicket(
@@ -119,7 +125,9 @@ public sealed class HmacWorldEntryTicketProtector
         if (claims is null
             || string.IsNullOrWhiteSpace(claims.Nonce)
             || string.IsNullOrWhiteSpace(claims.MapId)
-            || !Enum.IsDefined(claims.Archetype))
+            || !Enum.IsDefined(claims.Archetype)
+            || claims.Health is < 0
+            || claims.Mana is < 0)
         {
             return Failure(TicketValidationFailure.Malformed);
         }

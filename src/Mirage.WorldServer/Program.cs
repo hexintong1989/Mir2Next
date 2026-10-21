@@ -31,6 +31,7 @@ builder.Services.AddSingleton(world);
 builder.Services.AddSingleton<WorldSimulation>();
 builder.Services.AddHostedService<WorldTickService>();
 builder.Services.AddHostedService<WorldBroadcastService>();
+builder.Services.AddHostedService<WorldCheckpointService>();
 builder.Services.AddSingleton<WorldSocketHub>();
 builder.Services.AddSingleton<WorldEntryTicketReplayGuard>();
 
@@ -127,6 +128,8 @@ app.Map("/ws/v1/world", async context =>
         validation.Claims!.CharacterId,
         new GridPosition(validation.Claims.PositionX, validation.Claims.PositionY),
         validation.Claims.Archetype,
+        validation.Claims.Health,
+        validation.Claims.Mana,
         true,
         context.RequestAborted);
 });
@@ -155,6 +158,8 @@ if (app.Environment.IsDevelopment())
             characterId,
             new GridPosition(x, y),
             CharacterArchetype.Warrior,
+            null,
+            null,
             false,
             context.RequestAborted);
     });

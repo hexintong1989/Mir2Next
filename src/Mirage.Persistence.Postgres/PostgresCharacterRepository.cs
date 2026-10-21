@@ -18,7 +18,7 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
         const string sql = """
             SELECT character_id, account_id, name, normalized_name, archetype, level, created_at,
                    deletion_requested_at, delete_after, map_id, position_x, position_y,
-                   world_state_saved_at
+                   world_state_saved_at, health, mana
             FROM characters
             WHERE account_id = $1 AND character_id = $2
             """;
@@ -36,7 +36,7 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
         const string sql = """
             SELECT character_id, account_id, name, normalized_name, archetype, level, created_at,
                    deletion_requested_at, delete_after, map_id, position_x, position_y,
-                   world_state_saved_at
+                   world_state_saved_at, health, mana
             FROM characters
             WHERE account_id = $1
             ORDER BY created_at, character_id
@@ -129,7 +129,7 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
             WHERE account_id = $1 AND character_id = $2
             RETURNING character_id, account_id, name, normalized_name, archetype, level, created_at,
                       deletion_requested_at, delete_after, map_id, position_x, position_y,
-                      world_state_saved_at
+                      world_state_saved_at, health, mana
             """;
         await using var command = dataSource.CreateCommand(sql);
         command.Parameters.AddWithValue(accountId);
@@ -149,7 +149,9 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
             SET map_id = $2,
                 position_x = $3,
                 position_y = $4,
-                world_state_saved_at = $5
+                world_state_saved_at = $5,
+                health = COALESCE($6, health),
+                mana = COALESCE($7, mana)
             WHERE character_id = $1
               AND (world_state_saved_at IS NULL OR world_state_saved_at <= $5)
             """;
@@ -159,7 +161,34 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
         command.Parameters.AddWithValue(state.PositionX);
         command.Parameters.AddWithValue(state.PositionY);
         command.Parameters.AddWithValue(state.SavedAt.UtcDateTime);
+        command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer,
+            Value = (object?)state.Health ?? DBNull.Value });
+        command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Integer,
+            Value = (object?)state.Mana ?? DBNull.Value });
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async ValueTask<CharacterWorldState?> LoadWorldStateAsync(
+        Guid characterId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT map_id, position_x, position_y, world_state_saved_at, health, mana
+            FROM characters
+            WHERE character_id = $1
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue(characterId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken) || reader.IsDBNull(3))
+        {
+            return null;
+        }
+
+        return new CharacterWorldState(characterId, reader.GetString(0), reader.GetInt32(1),
+            reader.GetInt32(2), new DateTimeOffset(reader.GetDateTime(3), TimeSpan.Zero),
+            reader.IsDBNull(4) ? null : reader.GetInt32(4),
+            reader.IsDBNull(5) ? null : reader.GetInt32(5));
     }
 
     public async ValueTask<IReadOnlyList<CharacterDeletionAudit>> PurgeDueDeletionsAsync(
@@ -364,5 +393,7 @@ public sealed class PostgresCharacterRepository(NpgsqlDataSource dataSource) :
             reader.GetString(9),
             reader.GetInt32(10),
             reader.GetInt32(11),
-            reader.IsDBNull(12) ? null : new DateTimeOffset(reader.GetDateTime(12), TimeSpan.Zero));
+            reader.IsDBNull(12) ? null : new DateTimeOffset(reader.GetDateTime(12), TimeSpan.Zero),
+            reader.IsDBNull(13) ? null : reader.GetInt32(13),
+            reader.IsDBNull(14) ? null : reader.GetInt32(14));
 }

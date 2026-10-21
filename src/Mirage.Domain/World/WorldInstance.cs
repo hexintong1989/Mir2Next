@@ -687,6 +687,37 @@ public sealed class WorldInstance
         }
     }
 
+    public WorldPlayer? RestoreResources(
+        Guid characterId,
+        int? health,
+        int? mana,
+        long currentTick)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(currentTick);
+        lock (_gate)
+        {
+            if (!_players.TryGetValue(characterId, out var player))
+            {
+                return null;
+            }
+
+            var restoredHealth = Math.Clamp(health ?? player.Health, 0, player.MaximumHealth);
+            player = player with
+            {
+                Health = restoredHealth,
+                Mana = Math.Clamp(mana ?? player.Mana, 0, player.MaximumMana),
+                RespawnAtTick = restoredHealth == 0 ? currentTick + PlayerRespawnTicks : null
+            };
+            _players[characterId] = player;
+            if (restoredHealth == 0)
+            {
+                _occupiedPositions.Remove(player.Position);
+            }
+
+            return player;
+        }
+    }
+
     public IReadOnlyList<WorldPlayer> Snapshot()
     {
         lock (_gate)

@@ -275,7 +275,9 @@ app.MapPost("/api/v1/characters/{characterId:guid}/entry-ticket", async (
         character.MapId,
         character.PositionX,
         character.PositionY,
-        character.Archetype);
+        character.Archetype,
+        character.Health,
+        character.Mana);
     var webSocketUrl = configuration["WorldEntryTickets:WebSocketUrl"]
         ?? "ws://127.0.0.1:5090/ws/v1/world";
     return Results.Ok(new WorldEntryTicketResponse(

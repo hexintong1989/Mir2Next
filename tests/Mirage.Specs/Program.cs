@@ -47,6 +47,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
     ("只有冷静期届满的角色会被清理", OnlyDueCharactersArePurged),
     ("角色世界状态可以持久化且拒绝旧写入", CharacterWorldStatePersistsLatestPosition),
+    ("断线重进恢复生命法力并继续死亡倒计时", RestoredCombatResourcesAreAuthoritative),
     ("世界票据可验证且篡改会失败", WorldTicketRejectsTampering),
     ("世界票据携带服务端权威出生点", WorldTicketCarriesAuthoritativeSpawn),
     ("世界票据校验区服和有效期", WorldTicketChecksRealmAndExpiry),
@@ -722,7 +723,7 @@ static async Task CharacterWorldStatePersistsLatestPosition()
 
     Require(
         await repository.SaveWorldStateAsync(
-            new CharacterWorldState(created.Value!.Id, "local-field", 70, 71, savedAt),
+            new CharacterWorldState(created.Value!.Id, "local-field", 70, 71, savedAt, 52, 17),
             CancellationToken.None),
         "新世界状态应保存成功");
     Require(
@@ -732,9 +733,32 @@ static async Task CharacterWorldStatePersistsLatestPosition()
         "旧时间戳不应覆盖新世界状态");
 
     var loaded = await service.FindOwnedAsync(accountId, created.Value.Id);
+    var latestState = await repository.LoadWorldStateAsync(created.Value.Id, CancellationToken.None);
     Require(loaded is not null, "应能读回角色");
     Require(loaded!.PositionX == 70 && loaded.PositionY == 71, "应读回最新权威坐标");
+    Require(loaded.Health == 52 && loaded.Mana == 17, "应读回最新生命和法力");
     Require(loaded.WorldStateSavedAt == savedAt, "应记录最近保存时间");
+    Require(latestState?.PositionX == 70 && latestState.Health == 52 && latestState.Mana == 17,
+        "世界服应能读取最新状态而非沿用旧票据快照");
+}
+
+static Task RestoredCombatResourcesAreAuthoritative()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    world.JoinAtAvailablePosition(characterId, new GridPosition(1, 1), CharacterArchetype.Mage);
+    var restored = world.RestoreResources(characterId, 23, 7, 10)!;
+    Require(restored.Health == 23 && restored.Mana == 7, "重进时应恢复存档资源");
+    Require(restored.MaximumHealth == 80 && restored.MaximumMana == 60,
+        "职业基础上限仍由服务端决定");
+    Require(world.RestoreResources(characterId, 999, 999, 11)!.Health == 80
+        && world.FindPlayer(characterId)!.Mana == 60, "存档资源不能超过服务端上限");
+    var dead = world.RestoreResources(characterId, 0, 2, 12)!;
+    Require(!dead.IsAlive && dead.RespawnAtTick == 72,
+        "死亡角色重进后应等待复活");
+    Require(world.Join(Guid.NewGuid(), new GridPosition(1, 1)).IsSuccess,
+        "死亡角色不应占用地图格子");
+    return Task.CompletedTask;
 }
 
 static Task WorldTicketRejectsTampering()
@@ -761,15 +785,19 @@ static Task WorldTicketCarriesAuthoritativeSpawn()
         "local-field",
         77,
         78,
-        CharacterArchetype.Assassin);
+        CharacterArchetype.Assassin,
+        42,
+        9);
     var validation = CreateTicketProtector().Validate(ticket.Token, "local", now);
     Require(validation.IsSuccess, "带出生状态的票据应验证成功");
     Require(
         validation.Claims?.MapId == "local-field"
         && validation.Claims.PositionX == 77
         && validation.Claims.PositionY == 78
-        && validation.Claims.Archetype == CharacterArchetype.Assassin,
-        "票据应携带服务端保存的地图、坐标与职业");
+        && validation.Claims.Archetype == CharacterArchetype.Assassin
+        && validation.Claims.Health == 42
+        && validation.Claims.Mana == 9,
+        "票据应携带服务端保存的地图、坐标、职业和资源");
     return Task.CompletedTask;
 }
 

@@ -17,7 +17,9 @@ public sealed record GameCharacter(
     string MapId = "local-field",
     int PositionX = 64,
     int PositionY = 64,
-    DateTimeOffset? WorldStateSavedAt = null)
+    DateTimeOffset? WorldStateSavedAt = null,
+    int? Health = null,
+    int? Mana = null)
 {
     public bool IsPendingDeletion => DeletionRequestedAt is not null;
 }
@@ -27,7 +29,9 @@ public sealed record CharacterWorldState(
     string MapId,
     int PositionX,
     int PositionY,
-    DateTimeOffset SavedAt);
+    DateTimeOffset SavedAt,
+    int? Health = null,
+    int? Mana = null);
 
 public sealed record CharacterDeletionAudit(
     Guid CharacterId,
