@@ -35,7 +35,11 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 {"type":"chat","sequence":7,"text":"大家好"}
 ```
 
-`sequence` 由移动、攻击、拾取、装备、技能和聊天共用，对每个角色必须单调递增。基础攻击由服务端检查目标存在、近战距离及攻击间隔。技能由服务端检查职业、距离、法力及该技能的冷却。消息必须是 UTF-8 JSON 文本且不超过 4096 字节。
+```json
+{"type":"useItem","sequence":8,"itemId":"venison"}
+```
+
+`sequence` 由移动、攻击、拾取、装备、技能、聊天和物品使用共用，对每个角色必须单调递增。基础攻击由服务端检查目标存在、近战距离及攻击间隔。技能由服务端检查职业、距离、法力及该技能的冷却。消息必须是 UTF-8 JSON 文本且不超过 4096 字节。
 
 ## 服务端消息
 
@@ -47,6 +51,7 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 - `attackRejected`：攻击因目标、距离、冷却或序号不合法而被拒绝。
 - `skillResult` / `skillRejected`：技能伤害、施法后法力与角色状态，或拒绝原因。
 - `chatMessage` / `chatRejected`：带服务端角色ID和时间戳的同图视野聊天，或拒绝原因。
+- `itemUsed` / `itemUseRejected`：使用消耗品后的权威生命、法力及背包快照，或拒绝原因。
 - `dropSnapshot`：视野内地面物品、击杀者保护截止帧及物品过期帧。
 - `inventorySnapshot`：角色进入世界时的服务端背包快照。
 - `pickupResult` / `pickupRejected`：拾取后的堆叠数量或拒绝原因。
@@ -59,3 +64,4 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 玩家位置状态包含职业、当前/最大生命、当前/最大法力、攻击、防御、攻击间隔、存活状态及复活保护截止帧；死亡角色的操作会被相应拒绝。法力每20帧恢复1点，复活时恢复满值。首批技能：战士 `power_strike`、法师 `fireball`、道士 `soul_talisman`、刺客 `shadow_strike`。
 
 聊天单条最多120个UTF-16字符，禁止控制字符，同一角色至少间隔20帧（1秒），只广播给12格AOI内的玩家。
+首批消耗品：`venison` 恢复25点生命，`mana_herb` 恢复15点法力；资源已满时不消耗物品。

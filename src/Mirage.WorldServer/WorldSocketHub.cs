@@ -307,6 +307,35 @@ public sealed class WorldSocketHub(
                 continue;
             }
 
+            if (string.Equals(message.Type, "useItem", StringComparison.Ordinal)
+                && !string.IsNullOrWhiteSpace(message.ItemId))
+            {
+                var use = await simulation.QueueUseItemAsync(
+                    connection.CharacterId, message.Sequence, message.ItemId, cancellationToken);
+                if (!use.IsSuccess)
+                {
+                    await connection.SendAsync(new ServerEnvelope("itemUseRejected", new
+                    {
+                        sequence = message.Sequence,
+                        code = use.Failure.ToString()
+                    }), cancellationToken);
+                    continue;
+                }
+
+                await TryPersistInventoryAsync(connection.CharacterId, cancellationToken);
+                await TryPersistWorldStateAsync(use.Player, cancellationToken);
+                await connection.SendAsync(new ServerEnvelope("itemUsed", new
+                {
+                    sequence = message.Sequence,
+                    itemId = message.ItemId,
+                    player = ToPositionResponse(use.Player),
+                    inventory = use.Inventory.Select(item =>
+                        new InventoryItemResponse(item.ItemId, item.Quantity))
+                }), cancellationToken);
+                await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
+                continue;
+            }
+
             if (string.Equals(message.Type, "pickup", StringComparison.Ordinal)
                 && message.DropId != Guid.Empty)
             {

@@ -56,6 +56,17 @@ public enum ChatFailure
     Cooldown
 }
 
+public enum UseItemFailure
+{
+    None,
+    PlayerNotFound,
+    PlayerDead,
+    StaleSequence,
+    ItemNotConsumable,
+    ItemNotFound,
+    NoEffect
+}
+
 public enum PickupFailure
 {
     None,
@@ -143,6 +154,14 @@ public readonly record struct SkillResult(
 public readonly record struct ChatResult(ChatFailure Failure, WorldPlayer Player, string? Text)
 {
     public bool IsSuccess => Failure == ChatFailure.None;
+}
+
+public readonly record struct UseItemResult(
+    UseItemFailure Failure,
+    WorldPlayer Player,
+    IReadOnlyList<InventoryItem> Inventory)
+{
+    public bool IsSuccess => Failure == UseItemFailure.None;
 }
 
 public readonly record struct PickupResult(
@@ -588,6 +607,64 @@ public sealed class WorldInstance
 
             _chatLastSentTicks[characterId] = currentTick;
             return new ChatResult(ChatFailure.None, player, normalized);
+        }
+    }
+
+    public UseItemResult UseItem(Guid characterId, long sequence, string itemId)
+    {
+        lock (_gate)
+        {
+            if (!_players.TryGetValue(characterId, out var player))
+            {
+                return new UseItemResult(UseItemFailure.PlayerNotFound,
+                    new WorldPlayer(characterId, default, 0), []);
+            }
+
+            UseItemResult Reject(UseItemFailure failure) =>
+                new(failure, player, InventorySnapshot(characterId));
+
+            if (sequence <= player.LastProcessedSequence)
+            {
+                return Reject(UseItemFailure.StaleSequence);
+            }
+
+            if (!player.IsAlive)
+            {
+                return Reject(UseItemFailure.PlayerDead);
+            }
+
+            player = player with { LastProcessedSequence = sequence };
+            _players[characterId] = player;
+            if (!ConsumableCatalog.TryGet(itemId, out var definition))
+            {
+                return Reject(UseItemFailure.ItemNotConsumable);
+            }
+
+            var inventory = _inventories[characterId];
+            if (!inventory.TryGetValue(itemId, out var quantity) || quantity <= 0)
+            {
+                return Reject(UseItemFailure.ItemNotFound);
+            }
+
+            var health = Math.Min(player.MaximumHealth, player.Health + definition.HealthRestore);
+            var mana = Math.Min(player.MaximumMana, player.Mana + definition.ManaRestore);
+            if (health == player.Health && mana == player.Mana)
+            {
+                return Reject(UseItemFailure.NoEffect);
+            }
+
+            if (quantity == 1)
+            {
+                inventory.Remove(itemId);
+            }
+            else
+            {
+                inventory[itemId] = quantity - 1;
+            }
+
+            player = player with { Health = health, Mana = mana };
+            _players[characterId] = player;
+            return new UseItemResult(UseItemFailure.None, player, InventorySnapshot(characterId));
         }
     }
 

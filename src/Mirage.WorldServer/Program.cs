@@ -269,6 +269,27 @@ if (app.Environment.IsDevelopment())
             result.Text));
     });
 
+    app.MapPost("/internal/dev/players/{characterId:guid}/use-item", async (
+        Guid characterId,
+        UseItemRequest request,
+        WorldSimulation simulation,
+        CancellationToken cancellationToken) =>
+    {
+        if (string.IsNullOrWhiteSpace(request.ItemId))
+        {
+            return Results.BadRequest(new { code = "InvalidItemId" });
+        }
+
+        var result = await simulation.QueueUseItemAsync(
+            characterId, request.Sequence, request.ItemId, cancellationToken);
+        return Results.Ok(new UseItemResponse(
+            result.IsSuccess,
+            result.IsSuccess ? null : result.Failure.ToString(),
+            ToPositionResponse(result.Player),
+            result.Inventory.Select(item =>
+                new InventoryItemResponse(item.ItemId, item.Quantity)).ToArray()));
+    });
+
     app.MapPost("/internal/dev/players/{characterId:guid}/equip", async (
         Guid characterId,
         EquipItemRequest request,

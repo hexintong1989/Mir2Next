@@ -12,6 +12,8 @@ public sealed record CastSkillRequest(long Sequence, string? SkillId, Guid Monst
 
 public sealed record ChatRequest(long Sequence, string? Text);
 
+public sealed record UseItemRequest(long Sequence, string? ItemId);
+
 public sealed record PickupRequest(long Sequence, Guid DropId);
 
 public sealed record EquipItemRequest(long Sequence, string? ItemId);
@@ -73,6 +75,12 @@ public sealed record SkillResponse(
     PlayerPositionResponse Player);
 
 public sealed record ChatResponse(bool Accepted, string? Rejection, string? Text);
+
+public sealed record UseItemResponse(
+    bool Accepted,
+    string? Rejection,
+    PlayerPositionResponse Player,
+    IReadOnlyList<InventoryItemResponse> Inventory);
 
 public sealed record GroundDropResponse(
     Guid DropId,

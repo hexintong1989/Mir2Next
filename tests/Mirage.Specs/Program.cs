@@ -42,6 +42,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("主动技能按职业距离法力冷却和序号结算", SkillValidatesAuthorityAndResources),
     ("技能进入世界帧并在固定帧恢复法力", SkillExecutesOnWorldTickAndManaRegenerates),
     ("聊天在世界帧校验内容频率和序号", ChatValidatesContentRateAndSequence),
+    ("消耗品扣除背包并恢复受上限约束的资源", ConsumablesRestoreResourcesWithoutDuplication),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -646,6 +647,36 @@ static async Task ChatValidatesContentRateAndSequence()
         "控制字符应被拒绝");
     Require(world.Chat(sender, 5, "再次发言", 21).IsSuccess,
         "冷却结束后可以继续发送合法消息");
+}
+
+static async Task ConsumablesRestoreResourcesWithoutDuplication()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(1, 1));
+    world.ReplaceInventory(characterId,
+        [new InventoryItem("venison", 2), new InventoryItem("mana_herb", 1)]);
+    world.RestoreResources(characterId, 110, 20, 1);
+    var simulation = new WorldSimulation(world);
+    var pending = simulation.QueueUseItemAsync(characterId, 1, "venison").AsTask();
+    Require(!pending.IsCompleted, "物品使用必须等待世界帧");
+    simulation.Tick();
+    var first = await pending;
+    Require(first.IsSuccess && first.Player.Health == 120,
+        "恢复生命不应超过职业上限");
+    Require(first.Inventory.Single(item => item.ItemId == "venison").Quantity == 1,
+        "只应扣除一件消耗品");
+    Require(world.UseItem(characterId, 2, "venison").Failure == UseItemFailure.NoEffect,
+        "生命已满时不应浪费道具");
+    Require(world.InventorySnapshot(characterId).Single(item => item.ItemId == "venison").Quantity == 1,
+        "无效果的使用不能扣除背包");
+    var mana = world.UseItem(characterId, 3, "mana_herb");
+    Require(mana.IsSuccess && mana.Player.Mana == 30,
+        "法力药草应恢复法力并受上限约束");
+    Require(mana.Inventory.All(item => item.ItemId != "mana_herb"),
+        "最后一件消耗品应移出背包");
+    Require(world.UseItem(characterId, 4, "mana_herb").Failure == UseItemFailure.ItemNotFound,
+        "不能重复使用已耗尽的物品");
 }
 
 static async Task CharacterOwnershipIsEnforced()

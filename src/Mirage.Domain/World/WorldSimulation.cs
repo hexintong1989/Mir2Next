@@ -77,6 +77,19 @@ public sealed class WorldSimulation
         return await completion.Task.WaitAsync(cancellationToken);
     }
 
+    public async ValueTask<UseItemResult> QueueUseItemAsync(
+        Guid characterId,
+        long sequence,
+        string itemId,
+        CancellationToken cancellationToken = default)
+    {
+        var completion = new TaskCompletionSource<UseItemResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var command = new UseItemCommand(characterId, sequence, itemId, completion, cancellationToken);
+        await _commands.Writer.WriteAsync(command, cancellationToken);
+        return await completion.Task.WaitAsync(cancellationToken);
+    }
+
     public async ValueTask<PickupResult> QueuePickupAsync(
         Guid characterId,
         long sequence,
@@ -195,6 +208,19 @@ public sealed class WorldSimulation
     {
         public void Execute(WorldInstance world, long currentTick) =>
             Completion.TrySetResult(world.Chat(CharacterId, Sequence, Text, currentTick));
+
+        public void Cancel() => Completion.TrySetCanceled(CancellationToken);
+    }
+
+    private sealed record UseItemCommand(
+        Guid CharacterId,
+        long Sequence,
+        string ItemId,
+        TaskCompletionSource<UseItemResult> Completion,
+        CancellationToken CancellationToken) : IWorldCommand
+    {
+        public void Execute(WorldInstance world, long currentTick) =>
+            Completion.TrySetResult(world.UseItem(CharacterId, Sequence, ItemId));
 
         public void Cancel() => Completion.TrySetCanceled(CancellationToken);
     }
