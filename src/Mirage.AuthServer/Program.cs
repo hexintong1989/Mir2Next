@@ -19,6 +19,12 @@ builder.Services.AddSingleton<AccountService>();
 builder.Services.AddSingleton<CharacterService>();
 builder.Services.AddHostedService<CharacterDeletionCleanupService>();
 
+var adminAuditApiKey = builder.Configuration["AdminAudit:ApiKey"];
+if (!string.IsNullOrEmpty(adminAuditApiKey) && adminAuditApiKey.Length < 32)
+{
+    throw new InvalidOperationException("Admin audit API key must contain at least 32 characters.");
+}
+
 var ticketProtector = CreateTicketProtector(builder.Configuration);
 if (ticketProtector is not null)
 {
@@ -30,6 +36,7 @@ if (string.IsNullOrWhiteSpace(postgresConnectionString))
 {
     builder.Services.AddSingleton<IAccountRepository, InMemoryAccountRepository>();
     builder.Services.AddSingleton<ISessionStore, InMemorySessionStore>();
+    builder.Services.AddSingleton<IAccountSecurityEventStore, InMemoryAccountSecurityEventStore>();
     builder.Services.AddSingleton<ICharacterRepository, InMemoryCharacterRepository>();
 }
 else
@@ -38,11 +45,32 @@ else
     builder.Services.AddSingleton(dataSource);
     builder.Services.AddSingleton<IAccountRepository, PostgresAccountRepository>();
     builder.Services.AddSingleton<ISessionStore, PostgresSessionStore>();
+    builder.Services.AddSingleton<IAccountSecurityEventStore, PostgresAccountSecurityEventStore>();
     builder.Services.AddSingleton<ICharacterRepository, PostgresCharacterRepository>();
 }
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        var events = context.HttpContext.RequestServices.GetRequiredService<IAccountSecurityEventStore>();
+        var clock = context.HttpContext.RequestServices.GetRequiredService<IClock>();
+        var securityEvent = CreateSecurityEvent(
+            AccountSecurityEventType.AuthenticationRateLimited,
+            context.HttpContext,
+            clock);
+        try
+        {
+            await events.AppendAsync(securityEvent, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            var logger = context.HttpContext.RequestServices
+                .GetRequiredService<ILoggerFactory>()
+                .CreateLogger("AuthenticationRateLimiter");
+            logger.LogError(exception, "Failed to append authentication rate-limit audit event.");
+        }
+    };
     options.AddPolicy("authentication", context =>
         RateLimitPartition.GetFixedWindowLimiter(
             context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
@@ -74,10 +102,23 @@ app.MapGet("/health", () => Results.Ok(new
 
 app.MapPost("/api/v1/accounts", async (
     RegisterAccountRequest request,
+    HttpContext httpContext,
     AccountService accounts,
+    IAccountSecurityEventStore securityEvents,
+    IClock clock,
     CancellationToken cancellationToken) =>
 {
     var result = await accounts.RegisterAsync(request.UserName, request.Password, cancellationToken);
+    await securityEvents.AppendAsync(
+        CreateSecurityEvent(
+            result.IsSuccess
+                ? AccountSecurityEventType.RegistrationSucceeded
+                : AccountSecurityEventType.RegistrationRejected,
+            httpContext,
+            clock,
+            result.Value?.Id,
+            request.UserName),
+        cancellationToken);
     if (!result.IsSuccess)
     {
         return ToHttpError(result.Error!);
@@ -91,10 +132,23 @@ app.MapPost("/api/v1/accounts", async (
 
 app.MapPost("/api/v1/sessions", async (
     LoginRequest request,
+    HttpContext httpContext,
     AccountService accounts,
+    IAccountSecurityEventStore securityEvents,
+    IClock clock,
     CancellationToken cancellationToken) =>
 {
     var result = await accounts.LoginAsync(request.UserName, request.Password, cancellationToken);
+    await securityEvents.AppendAsync(
+        CreateSecurityEvent(
+            result.IsSuccess
+                ? AccountSecurityEventType.LoginSucceeded
+                : AccountSecurityEventType.LoginFailed,
+            httpContext,
+            clock,
+            result.Value?.AccountId,
+            request.UserName),
+        cancellationToken);
     if (!result.IsSuccess)
     {
         return ToHttpError(result.Error!);
@@ -127,12 +181,72 @@ app.MapGet("/api/v1/sessions/current", async (
 });
 
 app.MapDelete("/api/v1/sessions/current", async (
-    HttpRequest request,
+    HttpContext httpContext,
     AccountService accounts,
+    IAccountSecurityEventStore securityEvents,
+    IClock clock,
     CancellationToken cancellationToken) =>
 {
-    var result = await accounts.RevokeSessionAsync(ReadBearerToken(request), cancellationToken);
+    var accessToken = ReadBearerToken(httpContext.Request);
+    var principal = await accounts.ValidateSessionAsync(accessToken, cancellationToken);
+    var result = await accounts.RevokeSessionAsync(accessToken, cancellationToken);
+    await securityEvents.AppendAsync(
+        CreateSecurityEvent(
+            result.IsSuccess
+                ? AccountSecurityEventType.SessionRevoked
+                : AccountSecurityEventType.SessionRevokeFailed,
+            httpContext,
+            clock,
+            principal.Value?.AccountId,
+            principal.Value?.UserName),
+        cancellationToken);
     return result.IsSuccess ? Results.NoContent() : ToHttpError(result.Error!);
+});
+
+app.MapGet("/api/v1/admin/security-events", async (
+    HttpRequest request,
+    Guid? accountId,
+    AccountSecurityEventType? eventType,
+    DateTimeOffset? before,
+    int? limit,
+    IAccountSecurityEventStore securityEvents,
+    CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrEmpty(adminAuditApiKey))
+    {
+        return Results.Json(
+            new ApiError("AdminAuditUnavailable", "管理员审计接口尚未配置。"),
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    if (!SecuritySecretVerifier.IsMatch(request.Headers["X-Admin-Audit-Key"], adminAuditApiKey))
+    {
+        return Results.Json(
+            new ApiError("Unauthorized", "管理员凭据无效。"),
+            statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    var requestedLimit = limit ?? 100;
+    if (requestedLimit is < 1 or > AccountSecurityEventPolicy.MaximumQueryLimit)
+    {
+        return Results.BadRequest(new ApiError(
+            "InvalidLimit",
+            $"limit 必须介于 1 和 {AccountSecurityEventPolicy.MaximumQueryLimit} 之间。"));
+    }
+
+    var values = await securityEvents.ListRecentAsync(
+        accountId,
+        eventType,
+        before,
+        requestedLimit,
+        cancellationToken);
+    return Results.Ok(values.Select(value => new AccountSecurityEventResponse(
+        value.EventId,
+        value.EventType.ToString(),
+        value.AccountId,
+        value.AttemptedUserName,
+        value.SourceAddress,
+        value.OccurredAt)));
 });
 
 app.MapGet("/api/v1/realms", () => Results.Ok(new[]
@@ -324,6 +438,19 @@ static string? ReadBearerToken(HttpRequest request)
         ? authorization[prefix.Length..].Trim()
         : null;
 }
+
+static AccountSecurityEvent CreateSecurityEvent(
+    AccountSecurityEventType eventType,
+    HttpContext context,
+    IClock clock,
+    Guid? accountId = null,
+    string? attemptedUserName = null) =>
+    AccountSecurityEvent.Create(
+        eventType,
+        accountId,
+        attemptedUserName,
+        context.Connection.RemoteIpAddress?.ToString(),
+        clock.UtcNow);
 
 static HmacWorldEntryTicketProtector? CreateTicketProtector(IConfiguration configuration)
 {

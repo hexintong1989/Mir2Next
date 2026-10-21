@@ -13,6 +13,8 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("未知账号与错误密码返回相同错误", InvalidCredentialsDoNotRevealAccount),
     ("会话可以验证并注销", SessionCanBeValidatedAndRevoked),
     ("过期会话会被拒绝", ExpiredSessionIsRejected),
+    ("账号安全事件可按条件分页审计", AccountSecurityEventsCanBeFiltered),
+    ("管理员密钥使用安全比较且拒绝空值", AdminAuditSecretIsVerified),
     ("角色创建后可按账号列出", CharacterCanBeCreatedAndListed),
     ("角色名在全服不区分大小写且唯一", CharacterNameIsGloballyUnique),
     ("每账号最多创建四个角色", CharacterLimitIsEnforced),
@@ -145,6 +147,72 @@ static async Task ExpiredSessionIsRejected()
     clock.UtcNow = clock.UtcNow.AddMinutes(6);
 
     Require(!(await service.ValidateSessionAsync(login.Value!.AccessToken)).IsSuccess, "过期会话应失效");
+}
+
+static async Task AccountSecurityEventsCanBeFiltered()
+{
+    var store = new InMemoryAccountSecurityEventStore();
+    var accountId = Guid.NewGuid();
+    var start = new DateTimeOffset(2026, 10, 21, 2, 0, 0, TimeSpan.Zero);
+    var first = AccountSecurityEvent.Create(
+        AccountSecurityEventType.LoginFailed,
+        null,
+        "  PLAYER_08  ",
+        " 127.0.0.1 ",
+        start);
+    var second = AccountSecurityEvent.Create(
+        AccountSecurityEventType.LoginSucceeded,
+        accountId,
+        "PLAYER_08",
+        "127.0.0.1",
+        start.AddSeconds(1));
+    var third = AccountSecurityEvent.Create(
+        AccountSecurityEventType.SessionRevoked,
+        accountId,
+        "player_08",
+        "127.0.0.1",
+        start.AddSeconds(2));
+    await store.AppendAsync(first, CancellationToken.None);
+    await store.AppendAsync(second, CancellationToken.None);
+    await store.AppendAsync(third, CancellationToken.None);
+
+    var accountEvents = await store.ListRecentAsync(
+        accountId,
+        null,
+        null,
+        10,
+        CancellationToken.None);
+    var olderPage = await store.ListRecentAsync(
+        null,
+        null,
+        third.OccurredAt,
+        1,
+        CancellationToken.None);
+    var failedLogins = await store.ListRecentAsync(
+        null,
+        AccountSecurityEventType.LoginFailed,
+        null,
+        10,
+        CancellationToken.None);
+
+    Require(accountEvents.Count == 2 && accountEvents[0].EventId == third.EventId,
+        "账号审计应只返回该账号并按最新事件排序");
+    Require(olderPage.Count == 1 && olderPage[0].EventId == second.EventId,
+        "时间游标和条数限制应生成稳定的下一页");
+    Require(failedLogins.Count == 1 && failedLogins[0].AttemptedUserName == "player_08",
+        "失败登录应可按类型查询并规范化尝试用户名");
+    Require(first.SourceAddress == "127.0.0.1", "来源地址应去除首尾空白");
+}
+
+static Task AdminAuditSecretIsVerified()
+{
+    const string configured = "audit-key-with-at-least-32-characters";
+    Require(SecuritySecretVerifier.IsMatch(configured, configured), "正确管理员密钥应通过");
+    Require(!SecuritySecretVerifier.IsMatch("audit-key-with-at-least-32-characteXs", configured),
+        "错误管理员密钥应被拒绝");
+    Require(!SecuritySecretVerifier.IsMatch(null, configured), "空管理员密钥应被拒绝");
+    Require(!SecuritySecretVerifier.IsMatch(configured, null), "未配置密钥时必须拒绝访问");
+    return Task.CompletedTask;
 }
 
 static async Task CharacterCanBeCreatedAndListed()

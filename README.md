@@ -42,4 +42,15 @@ dotnet run --project src\Mirage.AuthServer
 
 生产环境应由部署流程执行迁移，并将 `Database__ApplyMigrations` 保持为 `false`。
 
+## 管理员安全审计
+
+认证服会记录账号注册、登录、注销及认证限流事件，但不会保存密码或会话令牌。审计查询默认关闭；部署时通过密钥显式启用：
+
+```powershell
+$env:AdminAudit__ApiKey="<至少32字符的随机密钥>"
+```
+
+管理员使用请求头 `X-Admin-Audit-Key` 调用
+`GET /api/v1/admin/security-events`。可选查询参数为 `accountId`、`eventType`、`before` 和 `limit`，其中 `limit` 范围为 1 至 200。未配置密钥时接口返回 503，密钥错误时返回 401。审计来源地址直接取服务器连接信息；只有在部署层正确配置受信任代理后，才应转发客户端地址。
+
 设计边界与后续路线见 [SPEC.md](SPEC.md)、[ROADMAP.md](ROADMAP.md)、[PROTOCOL.md](PROTOCOL.md) 和 [DECISIONS.md](DECISIONS.md)。

@@ -17,4 +17,12 @@ public sealed record SessionStatusResponse(
     string UserName,
     DateTimeOffset ExpiresAt);
 
+public sealed record AccountSecurityEventResponse(
+    Guid EventId,
+    string EventType,
+    Guid? AccountId,
+    string? AttemptedUserName,
+    string SourceAddress,
+    DateTimeOffset OccurredAt);
+
 public sealed record ApiError(string Code, string Message);
