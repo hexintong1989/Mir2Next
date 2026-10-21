@@ -56,7 +56,8 @@ public sealed record GroundDropResponse(
     int X,
     int Y,
     Guid OwnerCharacterId,
-    long OwnerProtectionUntilTick);
+    long OwnerProtectionUntilTick,
+    long ExpiresAtTick);
 
 public sealed record InventoryItemResponse(string ItemId, int Quantity);
 

@@ -70,7 +70,8 @@ public sealed record WorldDrop(
     int Quantity,
     GridPosition Position,
     Guid OwnerCharacterId,
-    long OwnerProtectionUntilTick);
+    long OwnerProtectionUntilTick,
+    long ExpiresAtTick);
 
 public sealed record InventoryItem(string ItemId, int Quantity);
 
@@ -112,6 +113,7 @@ public sealed class WorldInstance
     public const int MonsterRespawnTicks = 100;
     public const int MonsterAggroRadius = 8;
     public const int DropOwnerProtectionTicks = 200;
+    public const int DropLifetimeTicks = 1200;
     public const int InventorySlotLimit = 20;
     public const int MonsterAttackDamage = 5;
     public const int MonsterAttackCooldownTicks = 20;
@@ -432,6 +434,12 @@ public sealed class WorldInstance
                 return new PickupResult(PickupFailure.DropNotFound, player, null, null);
             }
 
+            if (currentTick >= drop.ExpiresAtTick)
+            {
+                _groundDrops.Remove(dropId);
+                return new PickupResult(PickupFailure.DropNotFound, player, null, null);
+            }
+
             if (player.Position.ChebyshevDistanceTo(drop.Position) > 1)
             {
                 return new PickupResult(PickupFailure.OutOfRange, player, drop, null);
@@ -565,6 +573,15 @@ public sealed class WorldInstance
         lock (_gate)
         {
             var changes = 0;
+            foreach (var expiredDrop in _groundDrops.Values
+                         .Where(drop => drop.ExpiresAtTick <= currentTick)
+                         .Select(drop => drop.DropId)
+                         .ToArray())
+            {
+                _groundDrops.Remove(expiredDrop);
+                changes++;
+            }
+
             foreach (var player in _players.Values
                          .Where(value => value.RespawnAtTick <= currentTick)
                          .OrderBy(value => value.CharacterId)
@@ -736,7 +753,8 @@ public sealed class WorldInstance
             1,
             position,
             ownerCharacterId,
-            currentTick + DropOwnerProtectionTicks);
+            currentTick + DropOwnerProtectionTicks,
+            currentTick + DropLifetimeTicks);
         _groundDrops.Add(drop.DropId, drop);
         return drop;
     }

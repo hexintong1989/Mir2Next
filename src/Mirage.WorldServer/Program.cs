@@ -304,7 +304,8 @@ static GroundDropResponse ToDropResponse(WorldDrop drop) =>
         drop.Position.X,
         drop.Position.Y,
         drop.OwnerCharacterId,
-        drop.OwnerProtectionUntilTick);
+        drop.OwnerProtectionUntilTick,
+        drop.ExpiresAtTick);
 
 static HmacWorldEntryTicketProtector? CreateTicketProtector(IConfiguration configuration)
 {

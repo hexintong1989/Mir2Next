@@ -453,7 +453,8 @@ public sealed class WorldSocketHub(
             drop.Position.X,
             drop.Position.Y,
             drop.OwnerCharacterId,
-            drop.OwnerProtectionUntilTick);
+            drop.OwnerProtectionUntilTick,
+            drop.ExpiresAtTick);
 
     private sealed record ClientEnvelope(
         string? Type,

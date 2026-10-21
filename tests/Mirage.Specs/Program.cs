@@ -34,6 +34,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("背包快照持久化拒绝旧版本覆盖", InventorySnapshotRejectsStaleSave),
     ("怪物会攻击相邻玩家并造成死亡", MonsterAttacksAndKillsAdjacentPlayer),
     ("死亡玩家会在固定帧复活", DeadPlayerRespawnsOnSchedule),
+    ("无人拾取的地面物品会按固定帧过期", GroundDropExpires),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -458,6 +459,26 @@ static Task DeadPlayerRespawnsOnSchedule()
     var player = world.FindPlayer(characterId)!;
     Require(player.IsAlive && player.Health == player.MaximumHealth, "复活后应恢复满血");
     Require(player.Position == new GridPosition(1, 1), "复活后应回到进入世界的位置");
+    return Task.CompletedTask;
+}
+
+static Task GroundDropExpires()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    var monsterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(1, 1));
+    world.SpawnMonster(monsterId, "slime", new GridPosition(2, 1), 1, 10, "slime_gel");
+    var attack = world.Attack(characterId, 1, monsterId, 1);
+
+    Require(world.Advance(attack.Drop!.ExpiresAtTick - 1) >= 0, "过期前世界帧应正常推进");
+    Require(world.DropSnapshot().Count == 1, "过期前掉落应保留");
+    world.Advance(attack.Drop.ExpiresAtTick);
+    Require(world.DropSnapshot().Count == 0, "到期掉落应被清理");
+    Require(
+        world.Pickup(characterId, 2, attack.Drop.DropId, attack.Drop.ExpiresAtTick).Failure
+            == PickupFailure.DropNotFound,
+        "过期掉落不能拾取");
     return Task.CompletedTask;
 }
 

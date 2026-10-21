@@ -32,7 +32,7 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 - `monsterSnapshot`：观察者当前视野内的怪物完整列表。
 - `monsterUpdated`：怪物受伤后的权威血量、伤害和死亡状态。
 - `attackRejected`：攻击因目标、距离、冷却或序号不合法而被拒绝。
-- `dropSnapshot`：视野内地面物品及其击杀者保护截止帧。
+- `dropSnapshot`：视野内地面物品、击杀者保护截止帧及物品过期帧。
 - `inventorySnapshot`：角色进入世界时的服务端背包快照。
 - `pickupResult` / `pickupRejected`：拾取后的堆叠数量或拒绝原因。
 - `protocolError`：JSON、消息类型或帧类型错误。
