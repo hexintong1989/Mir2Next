@@ -14,13 +14,20 @@ Development 环境另有 `/ws/v1/world/dev`，查询参数为 `characterId`、`x
 {"type":"move","sequence":1,"x":11,"y":10}
 ```
 
-`sequence` 对每个角色必须单调递增。消息必须是 UTF-8 JSON 文本且不超过 4096 字节。
+```json
+{"type":"attack","sequence":2,"monsterId":"10000000-0000-0000-0000-000000000001"}
+```
+
+`sequence` 由移动与攻击共用，对每个角色必须单调递增。基础攻击由服务端检查目标存在、近战距离、10帧冷却并结算伤害。消息必须是 UTF-8 JSON 文本且不超过 4096 字节。
 
 ## 服务端消息
 
 - `welcome`：协议版本、地图与自身状态。
 - `visibilityDelta`：`entered`、`updated`、`left` 三组 AOI 增量。
 - `moveRejected`：非法移动的原因和当前权威位置。
+- `monsterSnapshot`：观察者当前视野内的怪物完整列表。
+- `monsterUpdated`：怪物受伤后的权威血量、伤害和死亡状态。
+- `attackRejected`：攻击因目标、距离、冷却或序号不合法而被拒绝。
 - `protocolError`：JSON、消息类型或帧类型错误。
 
 所有位置均以服务端状态为准。客户端只能发送移动意图，不得直接设置最终状态。

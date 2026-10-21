@@ -24,6 +24,9 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("AOI 只返回视野范围内玩家", AreaOfInterestFiltersDistantPlayers),
     ("AOI 增量识别进入更新与离开", AreaOfInterestTracksDeltas),
     ("离开地图会释放占用位置", LeavingWorldReleasesPosition),
+    ("怪物占用格会阻挡玩家移动", MonsterPositionBlocksMovement),
+    ("近战攻击由世界帧结算并能击杀怪物", MeleeAttackExecutesOnWorldTick),
+    ("攻击会校验距离、冷却和消息序号", AttackValidatesRangeCooldownAndSequence),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
     ("角色删除必须确认名称并经过冷静期", CharacterDeletionRequiresConfirmation),
     ("角色删除申请可以撤销", CharacterDeletionCanBeCancelled),
@@ -265,6 +268,59 @@ static Task LeavingWorldReleasesPosition()
     world.Join(first, new GridPosition(5, 5));
     Require(world.Leave(first), "已加入玩家应能离开");
     Require(world.Join(second, new GridPosition(5, 5)).IsSuccess, "离开后原位置应可再次使用");
+    return Task.CompletedTask;
+}
+
+static Task MonsterPositionBlocksMovement()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    var monsterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(1, 1));
+    Require(world.SpawnMonster(monsterId, "training_dummy", new GridPosition(2, 1), 1, 20), "怪物应生成");
+    var blocked = world.Move(characterId, 1, new GridPosition(2, 1));
+    Require(blocked.Failure == MoveFailure.Occupied, "怪物所在格应阻挡移动");
+    return Task.CompletedTask;
+}
+
+static async Task MeleeAttackExecutesOnWorldTick()
+{
+    var world = new WorldInstance("test", 10, 10);
+    var characterId = Guid.NewGuid();
+    var monsterId = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(1, 1));
+    world.SpawnMonster(monsterId, "training_dummy", new GridPosition(2, 1), 1, 10);
+    var simulation = new WorldSimulation(world);
+
+    var pending = simulation.QueueAttackAsync(characterId, 1, monsterId).AsTask();
+    Require(!pending.IsCompleted, "攻击不应绕过世界帧直接执行");
+    simulation.Tick();
+    var result = await pending;
+    Require(result.IsSuccess && result.Damage == 10 && result.Defeated, "基础攻击应造成10点伤害并击杀目标");
+    Require(world.MonsterSnapshot().Count == 0, "死亡怪物应从活动世界移除");
+}
+
+static Task AttackValidatesRangeCooldownAndSequence()
+{
+    var world = new WorldInstance("test", 20, 20);
+    var characterId = Guid.NewGuid();
+    var nearby = Guid.NewGuid();
+    var distant = Guid.NewGuid();
+    world.Join(characterId, new GridPosition(1, 1));
+    world.SpawnMonster(nearby, "dummy", new GridPosition(2, 1), 1, 100);
+    world.SpawnMonster(distant, "dummy", new GridPosition(10, 10), 1, 100);
+
+    var outOfRange = world.Attack(characterId, 1, distant, 1);
+    var accepted = world.Attack(characterId, 2, nearby, 1);
+    var cooldown = world.Attack(characterId, 3, nearby, 2);
+    var stale = world.Attack(characterId, 2, nearby, 20);
+    var afterCooldown = world.Attack(characterId, 4, nearby, 11);
+
+    Require(outOfRange.Failure == AttackFailure.OutOfRange, "远距离目标应被拒绝");
+    Require(accepted.IsSuccess, "相邻目标应可攻击");
+    Require(cooldown.Failure == AttackFailure.Cooldown, "冷却期间应拒绝重复攻击");
+    Require(stale.Failure == AttackFailure.StaleSequence, "旧序号攻击应被拒绝");
+    Require(afterCooldown.IsSuccess, "冷却结束后应可再次攻击");
     return Task.CompletedTask;
 }
 

@@ -5,7 +5,26 @@ using Mirage.Shared.Contracts;
 using Mirage.WorldServer;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddSingleton(new WorldInstance("local-field", 128, 128));
+var world = new WorldInstance("local-field", 128, 128);
+world.SpawnMonster(
+    Guid.Parse("10000000-0000-0000-0000-000000000001"),
+    "training_dummy",
+    new GridPosition(66, 64),
+    1,
+    30);
+world.SpawnMonster(
+    Guid.Parse("10000000-0000-0000-0000-000000000002"),
+    "forest_deer",
+    new GridPosition(68, 65),
+    1,
+    40);
+world.SpawnMonster(
+    Guid.Parse("10000000-0000-0000-0000-000000000003"),
+    "scarecrow",
+    new GridPosition(63, 67),
+    2,
+    50);
+builder.Services.AddSingleton(world);
 builder.Services.AddSingleton<WorldSimulation>();
 builder.Services.AddHostedService<WorldTickService>();
 builder.Services.AddSingleton<WorldSocketHub>();
@@ -52,7 +71,7 @@ app.MapGet("/health", () => Results.Ok(new
 
 app.MapGet("/api/v1/maps", (WorldInstance world) => Results.Ok(new[]
 {
-    new MapResponse(world.MapId, world.Width, world.Height, world.PlayerCount)
+    new MapResponse(world.MapId, world.Width, world.Height, world.PlayerCount, world.MonsterCount)
 }));
 
 app.Map("/ws/v1/world", async context =>
@@ -156,6 +175,52 @@ if (app.Environment.IsDevelopment())
             ToPositionResponse(result.Player)));
     });
 
+    app.MapPost("/internal/dev/players/{characterId:guid}/attack", async (
+        Guid characterId,
+        AttackRequest request,
+        WorldSimulation simulation,
+        CancellationToken cancellationToken) =>
+    {
+        var result = await simulation.QueueAttackAsync(
+            characterId,
+            request.Sequence,
+            request.MonsterId,
+            cancellationToken);
+        return Results.Ok(new AttackResponse(
+            result.IsSuccess,
+            result.IsSuccess ? null : result.Failure.ToString(),
+            result.Damage,
+            result.Defeated,
+            result.Monster is null ? null : ToMonsterResponse(result.Monster)));
+    });
+
+    app.MapPost("/internal/dev/monsters", (
+        SpawnMonsterRequest request,
+        WorldInstance world) =>
+    {
+        var spawned = world.SpawnMonster(
+            request.MonsterId,
+            request.TemplateId,
+            new GridPosition(request.X, request.Y),
+            request.Level,
+            request.MaximumHealth);
+        return spawned
+            ? Results.Created(
+                $"/internal/dev/monsters/{request.MonsterId}",
+                new MonsterResponse(
+                    request.MonsterId,
+                    request.TemplateId,
+                    request.X,
+                    request.Y,
+                    request.Level,
+                    request.MaximumHealth,
+                    request.MaximumHealth))
+            : Results.Conflict(new { code = "MonsterSpawnRejected" });
+    });
+
+    app.MapGet("/internal/dev/monsters", (WorldInstance world) =>
+        Results.Ok(world.MonsterSnapshot().Select(ToMonsterResponse)));
+
     app.MapGet("/internal/dev/players", (WorldInstance world) =>
         Results.Ok(world.Snapshot().Select(ToPositionResponse)));
 
@@ -179,6 +244,16 @@ static PlayerPositionResponse ToPositionResponse(WorldPlayer player) =>
         player.Position.X,
         player.Position.Y,
         player.LastProcessedSequence);
+
+static MonsterResponse ToMonsterResponse(WorldMonster monster) =>
+    new(
+        monster.MonsterId,
+        monster.TemplateId,
+        monster.Position.X,
+        monster.Position.Y,
+        monster.Level,
+        monster.Health,
+        monster.MaximumHealth);
 
 static HmacWorldEntryTicketProtector? CreateTicketProtector(IConfiguration configuration)
 {

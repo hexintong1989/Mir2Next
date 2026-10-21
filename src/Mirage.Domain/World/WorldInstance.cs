@@ -18,10 +18,29 @@ public enum MoveFailure
     Occupied
 }
 
+public enum AttackFailure
+{
+    None,
+    PlayerNotFound,
+    MonsterNotFound,
+    StaleSequence,
+    OutOfRange,
+    Cooldown
+}
+
 public sealed record WorldPlayer(
     Guid CharacterId,
     GridPosition Position,
-    long LastProcessedSequence);
+    long LastProcessedSequence,
+    long LastAttackTick = -1000);
+
+public sealed record WorldMonster(
+    Guid MonsterId,
+    string TemplateId,
+    GridPosition Position,
+    int Level,
+    int Health,
+    int MaximumHealth);
 
 public readonly record struct JoinResult(JoinFailure Failure, WorldPlayer? Player)
 {
@@ -33,10 +52,23 @@ public readonly record struct MoveResult(MoveFailure Failure, WorldPlayer Player
     public bool IsSuccess => Failure == MoveFailure.None;
 }
 
+public readonly record struct AttackResult(
+    AttackFailure Failure,
+    WorldPlayer Player,
+    WorldMonster? Monster,
+    int Damage,
+    bool Defeated)
+{
+    public bool IsSuccess => Failure == AttackFailure.None;
+}
+
 public sealed class WorldInstance
 {
+    public const int BasicAttackDamage = 10;
+    public const int BasicAttackCooldownTicks = 10;
     private readonly object _gate = new();
     private readonly Dictionary<Guid, WorldPlayer> _players = [];
+    private readonly Dictionary<Guid, WorldMonster> _monsters = [];
     private readonly HashSet<GridPosition> _occupiedPositions = [];
 
     public WorldInstance(string mapId, int width, int height)
@@ -64,6 +96,50 @@ public sealed class WorldInstance
             {
                 return _players.Count;
             }
+        }
+    }
+
+    public int MonsterCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _monsters.Count;
+            }
+        }
+    }
+
+    public bool SpawnMonster(
+        Guid monsterId,
+        string templateId,
+        GridPosition position,
+        int level,
+        int maximumHealth)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(templateId);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(level);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumHealth);
+        lock (_gate)
+        {
+            if (_monsters.ContainsKey(monsterId)
+                || !Contains(position)
+                || _occupiedPositions.Contains(position))
+            {
+                return false;
+            }
+
+            _monsters.Add(
+                monsterId,
+                new WorldMonster(
+                    monsterId,
+                    templateId,
+                    position,
+                    level,
+                    maximumHealth,
+                    maximumHealth));
+            _occupiedPositions.Add(position);
+            return true;
         }
     }
 
@@ -163,6 +239,71 @@ public sealed class WorldInstance
         }
     }
 
+    public AttackResult Attack(
+        Guid characterId,
+        long sequence,
+        Guid monsterId,
+        long currentTick)
+    {
+        lock (_gate)
+        {
+            if (!_players.TryGetValue(characterId, out var player))
+            {
+                return new AttackResult(
+                    AttackFailure.PlayerNotFound,
+                    new WorldPlayer(characterId, default, 0),
+                    null,
+                    0,
+                    false);
+            }
+
+            if (sequence <= player.LastProcessedSequence)
+            {
+                return new AttackResult(AttackFailure.StaleSequence, player, null, 0, false);
+            }
+
+            player = player with { LastProcessedSequence = sequence };
+            _players[characterId] = player;
+            if (!_monsters.TryGetValue(monsterId, out var monster))
+            {
+                return new AttackResult(AttackFailure.MonsterNotFound, player, null, 0, false);
+            }
+
+            if (player.Position.ChebyshevDistanceTo(monster.Position) > 1)
+            {
+                return new AttackResult(AttackFailure.OutOfRange, player, monster, 0, false);
+            }
+
+            if (currentTick - player.LastAttackTick < BasicAttackCooldownTicks)
+            {
+                return new AttackResult(AttackFailure.Cooldown, player, monster, 0, false);
+            }
+
+            player = player with { LastAttackTick = currentTick };
+            _players[characterId] = player;
+            var damage = Math.Min(BasicAttackDamage, monster.Health);
+            var health = monster.Health - damage;
+            monster = monster with { Health = health };
+            var defeated = health == 0;
+            if (defeated)
+            {
+                _monsters.Remove(monsterId);
+                _occupiedPositions.Remove(monster.Position);
+            }
+            else
+            {
+                _monsters[monsterId] = monster;
+            }
+
+            return new AttackResult(
+                AttackFailure.None,
+                player,
+                monster,
+                damage,
+                defeated);
+        }
+    }
+
     public bool Leave(Guid characterId)
     {
         lock (_gate)
@@ -190,6 +331,35 @@ public sealed class WorldInstance
         lock (_gate)
         {
             return _players.Values.OrderBy(player => player.CharacterId).ToArray();
+        }
+    }
+
+    public IReadOnlyList<WorldMonster> MonsterSnapshot()
+    {
+        lock (_gate)
+        {
+            return _monsters.Values.OrderBy(monster => monster.MonsterId).ToArray();
+        }
+    }
+
+    public IReadOnlyList<WorldMonster> MonstersVisibleTo(Guid characterId, int radius)
+    {
+        if (radius is < 1 or > 64)
+        {
+            throw new ArgumentOutOfRangeException(nameof(radius), "AOI radius must be between 1 and 64.");
+        }
+
+        lock (_gate)
+        {
+            if (!_players.TryGetValue(characterId, out var observer))
+            {
+                return [];
+            }
+
+            return _monsters.Values
+                .Where(monster => observer.Position.ChebyshevDistanceTo(monster.Position) <= radius)
+                .OrderBy(monster => monster.MonsterId)
+                .ToArray();
         }
     }
 

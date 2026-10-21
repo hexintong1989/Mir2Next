@@ -5,13 +5,14 @@ namespace Mirage.Domain.World;
 public sealed class WorldSimulation
 {
     private readonly WorldInstance _world;
-    private readonly Channel<MoveCommand> _commands;
+    private readonly Channel<IWorldCommand> _commands;
+    private long _currentTick;
 
     public WorldSimulation(WorldInstance world, int queueCapacity = 4096)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(queueCapacity);
         _world = world;
-        _commands = Channel.CreateBounded<MoveCommand>(new BoundedChannelOptions(queueCapacity)
+        _commands = Channel.CreateBounded<IWorldCommand>(new BoundedChannelOptions(queueCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,
@@ -19,6 +20,8 @@ public sealed class WorldSimulation
             AllowSynchronousContinuations = false
         });
     }
+
+    public long CurrentTick => Interlocked.Read(ref _currentTick);
 
     public async ValueTask<MoveResult> QueueMoveAsync(
         Guid characterId,
@@ -33,20 +36,33 @@ public sealed class WorldSimulation
         return await completion.Task.WaitAsync(cancellationToken);
     }
 
+    public async ValueTask<AttackResult> QueueAttackAsync(
+        Guid characterId,
+        long sequence,
+        Guid monsterId,
+        CancellationToken cancellationToken = default)
+    {
+        var completion = new TaskCompletionSource<AttackResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var command = new AttackCommand(characterId, sequence, monsterId, completion, cancellationToken);
+        await _commands.Writer.WriteAsync(command, cancellationToken);
+        return await completion.Task.WaitAsync(cancellationToken);
+    }
+
     public int Tick(int maximumCommands = 1024)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumCommands);
+        var currentTick = Interlocked.Increment(ref _currentTick);
         var processed = 0;
         while (processed < maximumCommands && _commands.Reader.TryRead(out var command))
         {
             if (!command.CancellationToken.IsCancellationRequested)
             {
-                command.Completion.TrySetResult(
-                    _world.Move(command.CharacterId, command.Sequence, command.Target));
+                command.Execute(_world, currentTick);
             }
             else
             {
-                command.Completion.TrySetCanceled(command.CancellationToken);
+                command.Cancel();
             }
 
             processed++;
@@ -55,10 +71,36 @@ public sealed class WorldSimulation
         return processed;
     }
 
+    private interface IWorldCommand
+    {
+        CancellationToken CancellationToken { get; }
+        void Execute(WorldInstance world, long currentTick);
+        void Cancel();
+    }
+
     private sealed record MoveCommand(
         Guid CharacterId,
         long Sequence,
         GridPosition Target,
         TaskCompletionSource<MoveResult> Completion,
-        CancellationToken CancellationToken);
+        CancellationToken CancellationToken) : IWorldCommand
+    {
+        public void Execute(WorldInstance world, long currentTick) =>
+            Completion.TrySetResult(world.Move(CharacterId, Sequence, Target));
+
+        public void Cancel() => Completion.TrySetCanceled(CancellationToken);
+    }
+
+    private sealed record AttackCommand(
+        Guid CharacterId,
+        long Sequence,
+        Guid MonsterId,
+        TaskCompletionSource<AttackResult> Completion,
+        CancellationToken CancellationToken) : IWorldCommand
+    {
+        public void Execute(WorldInstance world, long currentTick) =>
+            Completion.TrySetResult(world.Attack(CharacterId, Sequence, MonsterId, currentTick));
+
+        public void Cancel() => Completion.TrySetCanceled(CancellationToken);
+    }
 }

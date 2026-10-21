@@ -61,6 +61,7 @@ public sealed class WorldSocketHub(
                     player = ToPositionResponse(world.FindPlayer(characterId)!)
                 }), cancellationToken);
             await RefreshVisibilityAsync(null, cancellationToken);
+            await SendMonsterSnapshotAsync(connection, cancellationToken);
             await ReceiveLoopAsync(connection, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -142,7 +143,7 @@ public sealed class WorldSocketHub(
                 continue;
             }
 
-            if (message is null || !string.Equals(message.Type, "move", StringComparison.Ordinal))
+            if (message is null)
             {
                 await connection.SendAsync(
                     new ServerEnvelope("protocolError", new { code = "UnknownMessageType" }),
@@ -150,29 +151,105 @@ public sealed class WorldSocketHub(
                 continue;
             }
 
-            var movement = await simulation.QueueMoveAsync(
-                connection.CharacterId,
-                message.Sequence,
-                new GridPosition(message.X, message.Y),
-                cancellationToken);
-            if (!movement.IsSuccess)
+            if (string.Equals(message.Type, "move", StringComparison.Ordinal))
             {
-                await connection.SendAsync(
-                    new ServerEnvelope("moveRejected", new
-                    {
-                        sequence = message.Sequence,
-                        code = movement.Failure.ToString(),
-                        player = ToPositionResponse(movement.Player)
-                    }),
+                var movement = await simulation.QueueMoveAsync(
+                    connection.CharacterId,
+                    message.Sequence,
+                    new GridPosition(message.X, message.Y),
                     cancellationToken);
+                if (!movement.IsSuccess)
+                {
+                    await connection.SendAsync(
+                        new ServerEnvelope("moveRejected", new
+                        {
+                            sequence = message.Sequence,
+                            code = movement.Failure.ToString(),
+                            player = ToPositionResponse(movement.Player)
+                        }),
+                        cancellationToken);
+                    continue;
+                }
+
+                if (connection.ShouldCheckpoint(DateTimeOffset.UtcNow))
+                {
+                    await TryPersistWorldStateAsync(movement.Player, cancellationToken);
+                }
+                await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
+                await SendMonsterSnapshotAsync(connection, cancellationToken);
                 continue;
             }
 
-            if (connection.ShouldCheckpoint(DateTimeOffset.UtcNow))
+            if (string.Equals(message.Type, "attack", StringComparison.Ordinal)
+                && message.MonsterId != Guid.Empty)
             {
-                await TryPersistWorldStateAsync(movement.Player, cancellationToken);
+                var attack = await simulation.QueueAttackAsync(
+                    connection.CharacterId,
+                    message.Sequence,
+                    message.MonsterId,
+                    cancellationToken);
+                if (!attack.IsSuccess)
+                {
+                    await connection.SendAsync(
+                        new ServerEnvelope("attackRejected", new
+                        {
+                            sequence = message.Sequence,
+                            code = attack.Failure.ToString()
+                        }),
+                        cancellationToken);
+                    continue;
+                }
+
+                await BroadcastMonsterUpdateAsync(attack, cancellationToken);
+                await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
+                continue;
             }
-            await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
+
+            await connection.SendAsync(
+                new ServerEnvelope("protocolError", new { code = "UnknownMessageType" }),
+                cancellationToken);
+        }
+    }
+
+    private Task SendMonsterSnapshotAsync(
+        ClientConnection connection,
+        CancellationToken cancellationToken) =>
+        connection.SendAsync(
+            new ServerEnvelope(
+                "monsterSnapshot",
+                new
+                {
+                    monsters = world.MonstersVisibleTo(connection.CharacterId, AoiRadius)
+                        .Select(ToMonsterResponse)
+                }),
+            cancellationToken);
+
+    private async Task BroadcastMonsterUpdateAsync(
+        AttackResult attack,
+        CancellationToken cancellationToken)
+    {
+        if (attack.Monster is null)
+        {
+            return;
+        }
+
+        foreach (var connection in _connections.Values)
+        {
+            var observer = world.FindPlayer(connection.CharacterId);
+            if (observer is null
+                || observer.Position.ChebyshevDistanceTo(attack.Monster.Position) > AoiRadius)
+            {
+                continue;
+            }
+
+            await connection.SendAsync(
+                new ServerEnvelope("monsterUpdated", new
+                {
+                    monster = ToMonsterResponse(attack.Monster),
+                    damage = attack.Damage,
+                    defeated = attack.Defeated
+                }),
+                cancellationToken);
         }
     }
 
@@ -239,7 +316,22 @@ public sealed class WorldSocketHub(
             player.Position.Y,
             player.LastProcessedSequence);
 
-    private sealed record ClientEnvelope(string? Type, long Sequence, int X, int Y);
+    private static MonsterResponse ToMonsterResponse(WorldMonster monster) =>
+        new(
+            monster.MonsterId,
+            monster.TemplateId,
+            monster.Position.X,
+            monster.Position.Y,
+            monster.Level,
+            monster.Health,
+            monster.MaximumHealth);
+
+    private sealed record ClientEnvelope(
+        string? Type,
+        long Sequence,
+        int X,
+        int Y,
+        Guid MonsterId);
     private sealed record ServerEnvelope(string Type, object Payload);
 
     private sealed class ClientConnection(Guid characterId, WebSocket socket)
