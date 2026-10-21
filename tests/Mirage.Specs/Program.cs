@@ -49,6 +49,7 @@ var specifications = new (string Name, Func<Task> Run)[]
     ("组队邀请与接受必须经过世界帧", PartyInviteAndAcceptExecuteOnWorldTick),
     ("组队校验队长人数过期并在离队时转移队长", PartyRulesAndLeaderTransferAreAuthoritative),
     ("队伍聊天跨距离投递并共用聊天冷却", PartyChatUsesPartyRecipientsAndSharedCooldown),
+    ("附近队员共享击杀经验且远距离队员不参与", NearbyPartyMembersShareKillExperience),
     ("消耗品扣除背包并恢复受上限约束的资源", ConsumablesRestoreResourcesWithoutDuplication),
     ("物品与资源同版本保存且旧快照不可覆盖", CombinedCharacterStateIsVersioned),
     ("角色仓储只返回账号拥有的角色", CharacterOwnershipIsEnforced),
@@ -870,6 +871,36 @@ static async Task PartyChatUsesPartyRecipientsAndSharedCooldown()
         "本地和队伍频道必须共用发送冷却");
     Require(world.PartyChat(outsider, 1, "越权", 2).Failure == ChatFailure.NotInParty,
         "未组队角色不能发送队伍聊天");
+}
+
+static Task NearbyPartyMembersShareKillExperience()
+{
+    var world = new WorldInstance("test", 40, 40);
+    var leader = Guid.NewGuid();
+    var nearby = Guid.NewGuid();
+    var distant = Guid.NewGuid();
+    world.Join(leader, new GridPosition(1, 1));
+    world.Join(nearby, new GridPosition(3, 1));
+    world.Join(distant, new GridPosition(30, 30));
+    world.InviteToParty(leader, 1, nearby, 0);
+    world.AcceptPartyInvite(nearby, 1, leader, 0);
+    world.InviteToParty(leader, 2, distant, 0);
+    world.AcceptPartyInvite(distant, 1, leader, 0);
+
+    var monsterId = Guid.NewGuid();
+    world.SpawnMonster(monsterId, "party_target", new GridPosition(2, 1), 1, 1);
+    var attack = world.Attack(leader, 3, monsterId, 1);
+
+    Require(attack.IsSuccess && attack.Defeated, "队长应击杀训练怪物");
+    Require(attack.ProgressionRewards?.Count == 2, "只有击杀点附近的存活队员应参与分配");
+    Require(attack.ProgressionRewards!.All(reward => reward.ExperienceGained == 19),
+        "两名有效队员应拆分经验并获得10%组队加成");
+    Require(world.FindPlayer(leader)!.Experience == 19
+            && world.FindPlayer(nearby)!.Experience == 19,
+        "击杀者与附近队员都应更新权威经验");
+    Require(world.FindPlayer(distant)!.Experience == 0,
+        "超出组队经验半径的队员不能获得经验");
+    return Task.CompletedTask;
 }
 
 static async Task ConsumablesRestoreResourcesWithoutDuplication()

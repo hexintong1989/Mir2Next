@@ -140,7 +140,8 @@ public readonly record struct AttackResult(
     bool Defeated,
     WorldDrop? Drop,
     int ExperienceGained = 0,
-    int LevelsGained = 0)
+    int LevelsGained = 0,
+    IReadOnlyList<ProgressionReward>? ProgressionRewards = null)
 {
     public bool IsSuccess => Failure == AttackFailure.None;
 }
@@ -154,7 +155,8 @@ public readonly record struct SkillResult(
     bool Defeated,
     WorldDrop? Drop,
     int ExperienceGained = 0,
-    int LevelsGained = 0)
+    int LevelsGained = 0,
+    IReadOnlyList<ProgressionReward>? ProgressionRewards = null)
 {
     public bool IsSuccess => Failure == SkillFailure.None;
 }
@@ -204,6 +206,8 @@ public sealed class WorldInstance
     public const int MaximumChatLength = 120;
     public const int MaximumPartyMembers = 5;
     public const int PartyInviteLifetimeTicks = 600;
+    public const int PartyExperienceRadius = 12;
+    public const int PartyExperienceBonusPercentPerAdditionalMember = 10;
     private readonly object _gate = new();
     private readonly Dictionary<Guid, WorldPlayer> _players = [];
     private readonly Dictionary<Guid, WorldMonster> _monsters = [];
@@ -471,6 +475,7 @@ public sealed class WorldInstance
             WorldDrop? drop = null;
             var experienceGained = 0;
             var levelsGained = 0;
+            IReadOnlyList<ProgressionReward>? progressionRewards = null;
             if (defeated)
             {
                 _monsters.Remove(monsterId);
@@ -484,7 +489,11 @@ public sealed class WorldInstance
                     monster.Position,
                     characterId,
                     currentTick);
-                (player, experienceGained, levelsGained) = AwardExperience(player, monster.Level);
+                progressionRewards = AwardDefeatExperience(player, monster);
+                var killerReward = progressionRewards.Single(value => value.CharacterId == characterId);
+                player = killerReward.Player;
+                experienceGained = killerReward.ExperienceGained;
+                levelsGained = killerReward.LevelsGained;
             }
             else
             {
@@ -499,7 +508,8 @@ public sealed class WorldInstance
                 defeated,
                 drop,
                 experienceGained,
-                levelsGained);
+                levelsGained,
+                progressionRewards);
         }
     }
 
@@ -579,6 +589,7 @@ public sealed class WorldInstance
             WorldDrop? drop = null;
             var experienceGained = 0;
             var levelsGained = 0;
+            IReadOnlyList<ProgressionReward>? progressionRewards = null;
             if (defeated)
             {
                 _monsters.Remove(monsterId);
@@ -589,7 +600,11 @@ public sealed class WorldInstance
                 };
                 drop = CreateDrop(_monsterSpawns[monsterId].DropItemId,
                     monster.Position, characterId, currentTick);
-                (player, experienceGained, levelsGained) = AwardExperience(player, monster.Level);
+                progressionRewards = AwardDefeatExperience(player, monster);
+                var casterReward = progressionRewards.Single(value => value.CharacterId == characterId);
+                player = casterReward.Player;
+                experienceGained = casterReward.ExperienceGained;
+                levelsGained = casterReward.LevelsGained;
             }
             else
             {
@@ -597,7 +612,7 @@ public sealed class WorldInstance
             }
 
             return new SkillResult(SkillFailure.None, skillId, player, monster,
-                damage, defeated, drop, experienceGained, levelsGained);
+                damage, defeated, drop, experienceGained, levelsGained, progressionRewards);
         }
     }
 
@@ -1596,11 +1611,47 @@ public sealed class WorldInstance
         };
     }
 
-    private (WorldPlayer Player, int ExperienceGained, int LevelsGained) AwardExperience(
+    private IReadOnlyList<ProgressionReward> AwardDefeatExperience(
         WorldPlayer player,
-        int monsterLevel)
+        WorldMonster monster)
     {
-        var reward = CharacterProgression.ExperienceReward(player.Level, monsterLevel);
+        var eligible = _partyByCharacter.TryGetValue(player.CharacterId, out var partyId)
+            ? _parties[partyId].MemberCharacterIds
+                .Select(characterId => _players.GetValueOrDefault(characterId))
+                .Where(member => member is not null
+                    && member.IsAlive
+                    && member.Position.ChebyshevDistanceTo(monster.Position) <= PartyExperienceRadius)
+                .Cast<WorldPlayer>()
+                .ToArray()
+            : [player];
+        if (!eligible.Any(member => member.CharacterId == player.CharacterId))
+        {
+            eligible = [.. eligible, player];
+        }
+
+        var groupMultiplier = 100 + (eligible.Length - 1) * PartyExperienceBonusPercentPerAdditionalMember;
+        var rewards = new List<ProgressionReward>(eligible.Length);
+        foreach (var member in eligible)
+        {
+            var soloReward = CharacterProgression.ExperienceReward(member.Level, monster.Level);
+            var sharedReward = (int)Math.Max(
+                1,
+                (long)soloReward * groupMultiplier / (100L * eligible.Length));
+            var (updated, levelsGained) = ApplyExperience(member, sharedReward);
+            rewards.Add(new ProgressionReward(
+                member.CharacterId,
+                sharedReward,
+                levelsGained,
+                updated));
+        }
+
+        return rewards;
+    }
+
+    private (WorldPlayer Player, int LevelsGained) ApplyExperience(
+        WorldPlayer player,
+        int reward)
+    {
         var experience = player.Experience > long.MaxValue - reward
             ? long.MaxValue
             : player.Experience + reward;
@@ -1610,7 +1661,7 @@ public sealed class WorldInstance
         {
             player = player with { Experience = experience };
             _players[player.CharacterId] = player;
-            return (player, reward, 0);
+            return (player, 0);
         }
 
         var previousMaximumMana = player.MaximumMana;
@@ -1630,7 +1681,7 @@ public sealed class WorldInstance
         };
         player = ApplyEquipmentStats(player);
         _players[player.CharacterId] = player;
-        return (player, reward, levelsGained);
+        return (player, levelsGained);
     }
 
     private WorldDrop CreateDrop(

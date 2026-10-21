@@ -257,15 +257,11 @@ public sealed class WorldSocketHub(
                 {
                     await BroadcastDropSnapshotAsync(cancellationToken);
                 }
-                if (attack.ExperienceGained > 0)
+                if (attack.ProgressionRewards is { Count: > 0 })
                 {
-                    await SendProgressionAsync(
-                        connection,
-                        attack.Player,
-                        attack.ExperienceGained,
-                        attack.LevelsGained,
+                    await BroadcastProgressionRewardsAsync(
+                        attack.ProgressionRewards,
                         cancellationToken);
-                    await TryPersistWorldStateAsync(attack.Player, cancellationToken);
                 }
                 await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
                 continue;
@@ -304,15 +300,11 @@ public sealed class WorldSocketHub(
                 {
                     await BroadcastDropSnapshotAsync(cancellationToken);
                 }
-                if (skill.ExperienceGained > 0)
+                if (skill.ProgressionRewards is { Count: > 0 })
                 {
-                    await SendProgressionAsync(
-                        connection,
-                        skill.Player,
-                        skill.ExperienceGained,
-                        skill.LevelsGained,
+                    await BroadcastProgressionRewardsAsync(
+                        skill.ProgressionRewards,
                         cancellationToken);
-                    await TryPersistWorldStateAsync(skill.Player, cancellationToken);
                 }
                 await RefreshVisibilityAsync(connection.CharacterId, cancellationToken);
                 continue;
@@ -833,6 +825,26 @@ public sealed class WorldSocketHub(
             levelsGained,
             player = ToPositionResponse(player)
         }), cancellationToken);
+
+    private async Task BroadcastProgressionRewardsAsync(
+        IReadOnlyList<ProgressionReward> rewards,
+        CancellationToken cancellationToken)
+    {
+        foreach (var reward in rewards)
+        {
+            if (_connections.TryGetValue(reward.CharacterId, out var connection))
+            {
+                await SendProgressionAsync(
+                    connection,
+                    reward.Player,
+                    reward.ExperienceGained,
+                    reward.LevelsGained,
+                    cancellationToken);
+            }
+
+            await TryPersistWorldStateAsync(reward.Player, cancellationToken);
+        }
+    }
 
     private static Task SendPartyRejectedAsync(
         ClientConnection connection,

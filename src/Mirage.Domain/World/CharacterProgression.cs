@@ -36,8 +36,17 @@ public static class CharacterProgression
         }
 
         ArgumentOutOfRangeException.ThrowIfLessThan(monsterLevel, 1);
-        var baseReward = 20 + monsterLevel * 15;
-        var levelMultiplier = Math.Clamp(100 + (monsterLevel - playerLevel) * 20, 25, 200);
-        return Math.Max(1, baseReward * levelMultiplier / 100);
+        var baseReward = 20L + monsterLevel * 15L;
+        var levelMultiplier = Math.Clamp(
+            100L + ((long)monsterLevel - playerLevel) * 20L,
+            25,
+            200);
+        return (int)Math.Clamp(baseReward * levelMultiplier / 100, 1, int.MaxValue);
     }
 }
+
+public sealed record ProgressionReward(
+    Guid CharacterId,
+    int ExperienceGained,
+    int LevelsGained,
+    WorldPlayer Player);
